@@ -48,12 +48,15 @@ Flags mirror the original `enum4linux` where possible (`-U -S -G -P -o -n -r -a`
 | User enumeration                | `-U` | ✅ Implemented | SAMR `EnumDomainUsers`                 |
 | Active sessions                 |      | ✅ Implemented | SRVSVC `NetrSessionEnum`               |
 | Logged-on users                 |      | ✅ Implemented | WKSSVC `NetrWkstaUserEnum`             |
-| Group + member enumeration      | `-G` | 🚧 Planned     | SAMR `EnumDomainGroups`/`GetMembers`   |
-| Password policy                 | `-P` | 🚧 Planned     | SAMR `QueryInformationDomain`          |
-| RID cycling                     | `-r` | 🚧 Planned     | LSA `LsarLookupSids` over a RID range  |
+| Group + alias enumeration       | `-G` | ✅ Implemented | SAMR `EnumGroups` / `EnumAliases`      |
+| Password policy                 | `-P` | ✅ Implemented | SAMR `QueryInformationDomain`          |
+| RID cycling                     | `-r` | ✅ Implemented | SAMR `LookupIdsInDomain` over a range  |
 
-The planned items require raw NDR opnum marshaling (not covered by the
-high-level crate clients) and are the subject of the next phase.
+The `-G`/`-P`/`-r` paths are implemented with raw NDR opnum marshaling (in
+[`src/samr_ext.rs`](src/samr_ext.rs)) since the high-level crate clients don't
+expose them; their decoders have synthetic-buffer unit tests. Group **member**
+resolution is the next enhancement. RID cycling currently covers the account
+domain (not the `Builtin` domain).
 
 ## Architecture
 
@@ -63,7 +66,8 @@ src/
   cli.rs       clap argument parsing (enum4linux-compatible flags)
   output.rs    structured Report (serde) + sectioned printing
   netbios.rs   hand-written NetBIOS Name Service client (UDP/137)
-  smb.rs       SMB session + MSRPC enumeration
+  smb.rs       SMB session + MSRPC enumeration (high-level clients)
+  samr_ext.rs  raw SAMR opnums: password policy, groups, RID cycling
 ```
 
 Built on the pure-Rust ["icedracon" offensive-AD crates](https://github.com/icedracon/dcerpc):

@@ -5,10 +5,12 @@
 //! All protocol errors from the underlying crates are flattened into
 //! `anyhow::Error` with context so the orchestrator can record them per-section.
 
-use crate::output::{OsInfo, ShareInfo, UserInfo};
+use crate::output::{GroupInfo, OsInfo, PasswordPolicy, ShareInfo, UserInfo};
+use crate::samr_ext;
 use anyhow::{Result, anyhow};
 use dcerpc::samr::SamrClient;
 use dcerpc::srvsvc::SrvsvcClient;
+use dcerpc::transport::SmbPipe;
 use dcerpc::wkssvc::WkstaUserClient;
 use smb2_client::SmbClient;
 use std::time::Duration;
@@ -263,6 +265,59 @@ impl SmbSession {
                 .await
                 .map_err(|e| anyhow!("NetrWkstaUserEnum failed: {e}"))?;
             Ok(users.into_iter().map(|u| (u.username, u.logon_domain)).collect())
+        })
+        .await
+    }
+
+    /// Query the domain password policy via raw SAMR (Phase 3b).
+    pub async fn password_policy(&mut self) -> Result<PasswordPolicy> {
+        let dur = self.dur;
+        let server = self.server.clone();
+        with_timeout(dur, "password policy", async {
+            let fid = self
+                .client
+                .open_pipe("samr")
+                .await
+                .map_err(|e| anyhow!("open \\samr failed: {e}"))?;
+            let mut pipe = SmbPipe::new(&mut self.client, fid);
+            let dom = samr_ext::setup(&mut pipe, &server).await?;
+            samr_ext::password_policy(&mut pipe, &dom).await
+        })
+        .await
+    }
+
+    /// Enumerate groups and aliases via raw SAMR (Phase 3b).
+    pub async fn groups(&mut self) -> Result<Vec<GroupInfo>> {
+        let dur = self.dur;
+        let server = self.server.clone();
+        with_timeout(dur, "group enumeration", async {
+            let fid = self
+                .client
+                .open_pipe("samr")
+                .await
+                .map_err(|e| anyhow!("open \\samr failed: {e}"))?;
+            let mut pipe = SmbPipe::new(&mut self.client, fid);
+            let dom = samr_ext::setup(&mut pipe, &server).await?;
+            samr_ext::enum_groups(&mut pipe, &dom).await
+        })
+        .await
+    }
+
+    /// RID cycling via SAMR LookupIdsInDomain (Phase 3b). Returns the domain SID
+    /// alongside the resolved accounts.
+    pub async fn rid_cycle(&mut self, rids: &[u32]) -> Result<(String, Vec<UserInfo>)> {
+        let dur = self.dur;
+        let server = self.server.clone();
+        with_timeout(dur, "RID cycling", async {
+            let fid = self
+                .client
+                .open_pipe("samr")
+                .await
+                .map_err(|e| anyhow!("open \\samr failed: {e}"))?;
+            let mut pipe = SmbPipe::new(&mut self.client, fid);
+            let dom = samr_ext::setup(&mut pipe, &server).await?;
+            let users = samr_ext::rid_cycle(&mut pipe, &dom, rids).await?;
+            Ok((dom.domain_sid, users))
         })
         .await
     }

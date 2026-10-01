@@ -3,6 +3,7 @@
 mod cli;
 mod netbios;
 mod output;
+mod samr_ext;
 mod smb;
 
 use clap::Parser;
@@ -28,7 +29,6 @@ async fn run(args: Cli) -> i32 {
     run_netbios(&args, &mut report).await;
     run_os(&args, &mut report).await;
     run_smb_rpc(&args, &mut report).await;
-    report_unsupported(&args, &mut report);
 
     if args.json {
         println!("{}", report.to_json());
@@ -124,7 +124,8 @@ async fn run_os(args: &Cli, report: &mut Report) {
 
 /// Authenticated/null-session MSRPC enumeration: shares, users, sessions.
 async fn run_smb_rpc(args: &Cli, report: &mut Report) {
-    let need_session = args.shares || args.users;
+    let need_session =
+        args.shares || args.users || args.groups || args.pass_pol || args.rid_cycle;
     if !need_session {
         return;
     }
@@ -231,30 +232,106 @@ async fn run_smb_rpc(args: &Cli, report: &mut Report) {
             }
         }
     }
-}
 
-/// Sections not yet implemented (Phase 3b: groups, password policy, RID cycling).
-fn report_unsupported(args: &Cli, report: &mut Report) {
-    let mut pending = Vec::new();
+    // Groups + aliases (SAMR) ---------------------------------------------
     if args.groups {
-        pending.push("groups (-G)");
-    }
-    if args.pass_pol {
-        pending.push("password policy (-P)");
-    }
-    if args.rid_cycle {
-        pending.push("RID cycling (-r)");
-    }
-    if pending.is_empty() {
-        return;
-    }
-    if !args.json {
-        output::section("Not Yet Implemented");
-        for p in &pending {
-            output::warn(format!("{p} — planned for Phase 3b (raw SAMR/LSA opnums)"));
+        if !args.json {
+            output::section("Groups & Aliases (SAMR)");
+        }
+        match session.groups().await {
+            Ok(groups) => {
+                if !args.json {
+                    if groups.is_empty() {
+                        output::warn("No groups returned");
+                    }
+                    for g in &groups {
+                        output::good(format!("rid {:<6} [{}] {}", g.rid, g.group_type, g.name));
+                    }
+                }
+                report.groups = groups;
+            }
+            Err(e) => {
+                if !args.json {
+                    output::error(format!("Group enumeration failed: {e}"));
+                }
+                report.note_error("groups", e.to_string());
+            }
         }
     }
-    report.note_error("unimplemented", pending.join(", "));
+
+    // Password policy (SAMR) ----------------------------------------------
+    if args.pass_pol {
+        if !args.json {
+            output::section("Password Policy (SAMR)");
+        }
+        match session.password_policy().await {
+            Ok(pol) => {
+                if !args.json {
+                    if let Some(v) = pol.min_length {
+                        output::good(format!("Minimum password length ... {v}"));
+                    }
+                    if let Some(v) = pol.history_length {
+                        output::good(format!("Password history length .... {v}"));
+                    }
+                    match pol.max_age_days {
+                        Some(v) => output::good(format!("Maximum password age ....... {v} days")),
+                        None => output::good("Maximum password age ....... never".to_string()),
+                    }
+                    match pol.min_age_days {
+                        Some(v) => output::good(format!("Minimum password age ....... {v} days")),
+                        None => output::good("Minimum password age ....... none".to_string()),
+                    }
+                    if let Some(v) = pol.complexity {
+                        output::good(format!("Complexity required ........ {v}"));
+                    }
+                }
+                report.password_policy = Some(pol);
+            }
+            Err(e) => {
+                if !args.json {
+                    output::error(format!("Password policy query failed: {e}"));
+                }
+                report.note_error("password_policy", e.to_string());
+            }
+        }
+    }
+
+    // RID cycling (SAMR LookupIdsInDomain) --------------------------------
+    if args.rid_cycle {
+        if !args.json {
+            output::section("RID Cycling (SAMR)");
+        }
+        match cli::parse_rid_ranges(&args.rid_range) {
+            Ok(rids) => match session.rid_cycle(&rids).await {
+                Ok((domain_sid, accounts)) => {
+                    if !args.json {
+                        output::info(format!("Domain SID: {domain_sid}"));
+                        if accounts.is_empty() {
+                            output::warn("No RIDs resolved in the given range");
+                        }
+                        for a in &accounts {
+                            let kind = a.description.as_deref().unwrap_or("");
+                            output::good(format!("rid {:<6} [{kind}] {}", a.rid, a.name));
+                        }
+                    }
+                    // Merge resolved accounts into the users list.
+                    report.users.extend(accounts);
+                }
+                Err(e) => {
+                    if !args.json {
+                        output::error(format!("RID cycling failed: {e}"));
+                    }
+                    report.note_error("rid_cycle", e.to_string());
+                }
+            },
+            Err(e) => {
+                if !args.json {
+                    output::error(format!("Invalid RID range: {e}"));
+                }
+                report.note_error("rid_cycle", e.to_string());
+            }
+        }
+    }
 }
 
 fn print_banner(args: &Cli) {
