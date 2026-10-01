@@ -1,0 +1,21 @@
+[package]
+name = "enum4mac"
+version = "0.1.0"
+edition = "2024"
+description = "A native, self-contained macOS/Rust port of enum4linux — SMB/NetBIOS enumeration with no Samba tools required"
+license = "MIT"
+
+[[bin]]
+name = "enum4mac"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0"
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "io-util"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+smb2-client = "0.2.5"
+dcerpc = "0.2.11"
+
+[dev-dependencies]
