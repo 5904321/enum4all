@@ -3,6 +3,7 @@
 mod cli;
 mod netbios;
 mod output;
+mod rprn_ext;
 mod samr_ext;
 mod smb;
 mod srvsvc_ext;
@@ -126,8 +127,13 @@ async fn run_os(args: &Cli, report: &mut Report) {
 
 /// Authenticated/null-session MSRPC enumeration: shares, users, sessions.
 async fn run_smb_rpc(args: &Cli, report: &mut Report) {
-    let need_session =
-        args.shares || args.users || args.groups || args.pass_pol || args.rid_cycle || args.os;
+    let need_session = args.shares
+        || args.users
+        || args.groups
+        || args.pass_pol
+        || args.rid_cycle
+        || args.os
+        || args.printers;
     if !need_session {
         return;
     }
@@ -288,6 +294,33 @@ async fn run_smb_rpc(args: &Cli, report: &mut Report) {
                     output::error(format!("Group enumeration failed: {e}"));
                 }
                 report.note_error("groups", e.to_string());
+            }
+        }
+    }
+
+    // Printers (spoolss) ---------------------------------------------------
+    if args.printers {
+        if !args.json {
+            output::section("Printers (spoolss)");
+        }
+        match session.printers().await {
+            Ok(printers) => {
+                if !args.json {
+                    if printers.is_empty() {
+                        output::warn("No printers returned");
+                    }
+                    for p in &printers {
+                        let c = if p.comment.is_empty() { String::new() } else { format!(" - {}", p.comment) };
+                        output::good(format!("{}{c}", p.name));
+                    }
+                }
+                report.printers = printers;
+            }
+            Err(e) => {
+                if !args.json {
+                    output::error(format!("Printer enumeration failed: {e}"));
+                }
+                report.note_error("printers", e.to_string());
             }
         }
     }

@@ -101,6 +101,17 @@ pub struct OsInfo {
     pub signing: Option<String>,
 }
 
+/// A printer discovered via spoolss.
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct PrinterInfo {
+    pub name: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub comment: String,
+    pub flags: u32,
+}
+
 /// A NetBIOS node-status entry.
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct NetbiosName {
@@ -131,6 +142,8 @@ pub struct Report {
     pub groups: Vec<GroupInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub password_policy: Option<PasswordPolicy>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub printers: Vec<PrinterInfo>,
     /// Non-fatal errors encountered per section, for diagnostics.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub errors: BTreeMap<String, String>,

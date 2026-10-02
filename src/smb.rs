@@ -5,8 +5,8 @@
 //! All protocol errors from the underlying crates are flattened into
 //! `anyhow::Error` with context so the orchestrator can record them per-section.
 
-use crate::output::{GroupInfo, OsInfo, PasswordPolicy, ShareInfo, UserInfo};
-use crate::{samr_ext, srvsvc_ext};
+use crate::output::{GroupInfo, OsInfo, PasswordPolicy, PrinterInfo, ShareInfo, UserInfo};
+use crate::{rprn_ext, samr_ext, srvsvc_ext};
 use anyhow::{Result, anyhow};
 use dcerpc::samr::SamrClient;
 use dcerpc::srvsvc::SrvsvcClient;
@@ -280,6 +280,21 @@ impl SmbSession {
                 .map_err(|e| anyhow!("open \\srvsvc failed: {e}"))?;
             let mut pipe = SmbPipe::new(&mut self.client, fid);
             srvsvc_ext::server_info(&mut pipe).await
+        })
+        .await
+    }
+
+    /// Enumerate printers via spoolss RpcEnumPrinters (level 1).
+    pub async fn printers(&mut self) -> Result<Vec<PrinterInfo>> {
+        let dur = self.dur;
+        with_timeout(dur, "printer enumeration", async {
+            let fid = self
+                .client
+                .open_pipe("spoolss")
+                .await
+                .map_err(|e| anyhow!("open \\spoolss failed: {e}"))?;
+            let mut pipe = SmbPipe::new(&mut self.client, fid);
+            rprn_ext::enum_printers(&mut pipe).await
         })
         .await
     }

@@ -39,24 +39,32 @@ Flags mirror the original `enum4linux` where possible (`-U -S -G -P -o -n -r -a`
 
 ## Feature status
 
-| Feature                         | Flag | Status        | Mechanism                              |
-|---------------------------------|------|---------------|----------------------------------------|
-| NetBIOS node status             | `-n` | ✅ Implemented | Native NBNS over UDP/137               |
-| OS / dialect / signing info     | `-o` | ✅ Implemented | SMB2 NEGOTIATE probe                   |
-| Null-session detection          |      | ✅ Implemented | `smb2-client` anonymous logon          |
-| Share enumeration (+ access)    | `-S` | ✅ Implemented | SRVSVC `NetrShareEnum`                 |
-| User enumeration                | `-U` | ✅ Implemented | SAMR `EnumDomainUsers`                 |
-| Active sessions                 |      | ✅ Implemented | SRVSVC `NetrSessionEnum`               |
-| Logged-on users                 |      | ✅ Implemented | WKSSVC `NetrWkstaUserEnum`             |
-| Group + alias enumeration       | `-G` | ✅ Implemented | SAMR `EnumGroups` / `EnumAliases`      |
-| Password policy                 | `-P` | ✅ Implemented | SAMR `QueryInformationDomain`          |
-| RID cycling                     | `-r` | ✅ Implemented | SAMR `LookupIdsInDomain` over a range  |
+All features below are **verified live against a Samba server**.
 
-The `-G`/`-P`/`-r` paths are implemented with raw NDR opnum marshaling (in
-[`src/samr_ext.rs`](src/samr_ext.rs)) since the high-level crate clients don't
-expose them; their decoders have synthetic-buffer unit tests. Group **member**
-resolution is the next enhancement. RID cycling currently covers the account
-domain (not the `Builtin` domain).
+| Feature                            | Flag | Mechanism                                        |
+|------------------------------------|------|--------------------------------------------------|
+| NetBIOS node status                | `-n` | Native NBNS over UDP/137                          |
+| OS / dialect / signing             | `-o` | SMB2 NEGOTIATE probe + SRVSVC `NetrServerGetInfo` |
+| Null-session detection             |      | `smb2-client` anonymous logon                    |
+| Share enumeration (+ access test)  | `-S` | SRVSVC `NetrShareEnum`                            |
+| User enumeration                   | `-U` | SAMR `EnumDomainUsers`                            |
+| Active sessions                    |      | SRVSVC `NetrSessionEnum`                          |
+| Logged-on users                    |      | WKSSVC `NetrWkstaUserEnum`                        |
+| Groups + aliases + **members**     | `-G` | SAMR `EnumGroups`/`EnumAliases` + `GetMembers*`   |
+| Password policy (incl. lockout)    | `-P` | SAMR `QueryInformationDomain` (classes 1 + 12)    |
+| RID cycling (account + Builtin)    | `-r` | SAMR `LookupIdsInDomain` over a range             |
+| Printer enumeration                | `-i` | spoolss `RpcEnumPrinters` (level 1)               |
+
+The `-G`/`-P`/`-r`/`-i` paths are implemented with raw NDR opnum marshaling (in
+[`src/samr_ext.rs`](src/samr_ext.rs), [`src/srvsvc_ext.rs`](src/srvsvc_ext.rs),
+[`src/rprn_ext.rs`](src/rprn_ext.rs)) since the high-level crate clients don't
+expose them; their decoders have synthetic-buffer unit tests and were confirmed
+against live Samba output. Groups, aliases and RID cycling cover both the
+account domain and the Builtin domain (S-1-5-32).
+
+Anonymous (null-session) enumeration is implemented and works against targets
+that permit it; modern Samba/Windows that disable anonymous IPC$ return
+`STATUS_ACCESS_DENIED`, as expected — supply credentials with `-u`/`-p` there.
 
 ## Architecture
 
@@ -67,7 +75,9 @@ src/
   output.rs    structured Report (serde) + sectioned printing
   netbios.rs   hand-written NetBIOS Name Service client (UDP/137)
   smb.rs       SMB session + MSRPC enumeration (high-level clients)
-  samr_ext.rs  raw SAMR opnums: password policy, groups, RID cycling
+  samr_ext.rs  raw SAMR opnums: password policy, groups+members, RID cycling
+  srvsvc_ext.rs raw SRVSVC NetrServerGetInfo (OS/server details)
+  rprn_ext.rs  raw spoolss RpcEnumPrinters (printer enumeration)
 ```
 
 Built on the pure-Rust ["icedracon" offensive-AD crates](https://github.com/icedracon/dcerpc):
@@ -77,14 +87,14 @@ Built on the pure-Rust ["icedracon" offensive-AD crates](https://github.com/iced
 
 ## Status / caveats
 
-- **Verification pending against a live host.** The NetBIOS layer and all
-  parsing/CLI logic are unit-tested, and the whole tool compiles and runs
-  end-to-end with correct timeout/error handling. The MSRPC paths are written
-  against the crate APIs but have **not yet been validated against a real SMB
-  server** — do that before relying on the output.
-- The underlying RPC crates are young (0.1–0.2.x); behaviour on hardened
-  (2019+) Windows DCs that block anonymous access will be "session rejected",
-  as expected.
+- **Verified live.** Every feature was validated against a Samba server
+  (users, shares, groups+members across both domains, password policy with
+  lockout, RID cycling, server info, printers, and NetBIOS node status against
+  real `nmbd`). Decoders also have synthetic-buffer unit tests.
+- The underlying RPC crates are young (0.1–0.2.x). Field orders for the NDR
+  unions (password/lockout info, server info) were corrected against live wire
+  captures; behaviour against Windows (vs. Samba) may differ in edge cases.
+- Per-operation timeouts bound every network call (`-t`, default 5s).
 
 ## License
 

@@ -53,6 +53,10 @@ pub struct Cli {
     #[arg(short = 'n', long = "netbios")]
     pub netbios: bool,
 
+    /// Get printer information (spoolss RpcEnumPrinters).
+    #[arg(short = 'i', long = "printers")]
+    pub printers: bool,
+
     /// Enumerate users via RID cycling (LSA LookupSids over a RID range).
     #[arg(short = 'r', long = "rid-cycle")]
     pub rid_cycle: bool,
@@ -97,6 +101,7 @@ impl Cli {
             || self.pass_pol
             || self.os
             || self.netbios
+            || self.printers
             || self.rid_cycle;
 
         // `-a`, or no specific flag at all, means "do the simple set".
@@ -107,6 +112,7 @@ impl Cli {
             self.pass_pol = true;
             self.os = true;
             self.netbios = true;
+            self.printers = true;
             // RID cycling is intentionally NOT part of `-a` in enum4linux.
         }
         self
