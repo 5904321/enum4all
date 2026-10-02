@@ -6,7 +6,7 @@
 //! `anyhow::Error` with context so the orchestrator can record them per-section.
 
 use crate::output::{GroupInfo, OsInfo, PasswordPolicy, ShareInfo, UserInfo};
-use crate::samr_ext;
+use crate::{samr_ext, srvsvc_ext};
 use anyhow::{Result, anyhow};
 use dcerpc::samr::SamrClient;
 use dcerpc::srvsvc::SrvsvcClient;
@@ -46,7 +46,7 @@ fn with_port(host: &str) -> String {
 }
 
 /// Strip any `:port` suffix to get the bare hostname used for NTLM target / UNC.
-fn bare_host(host: &str) -> String {
+pub fn bare_host(host: &str) -> String {
     if host.starts_with('[') {
         // [ipv6]:port or [ipv6]
         if let Some(end) = host.find(']') {
@@ -265,6 +265,21 @@ impl SmbSession {
                 .await
                 .map_err(|e| anyhow!("NetrWkstaUserEnum failed: {e}"))?;
             Ok(users.into_iter().map(|u| (u.username, u.logon_domain)).collect())
+        })
+        .await
+    }
+
+    /// Server/OS details via SRVSVC NetrServerGetInfo (level 101).
+    pub async fn server_info(&mut self) -> Result<OsInfo> {
+        let dur = self.dur;
+        with_timeout(dur, "server info", async {
+            let fid = self
+                .client
+                .open_pipe("srvsvc")
+                .await
+                .map_err(|e| anyhow!("open \\srvsvc failed: {e}"))?;
+            let mut pipe = SmbPipe::new(&mut self.client, fid);
+            srvsvc_ext::server_info(&mut pipe).await
         })
         .await
     }

@@ -25,6 +25,10 @@ mod ext_opnum {
     pub const ENUM_GROUPS: u16 = 11;
     pub const ENUM_ALIASES: u16 = 15;
     pub const LOOKUP_IDS: u16 = 18;
+    pub const OPEN_GROUP: u16 = 19;
+    pub const GET_MEMBERS_IN_GROUP: u16 = 25;
+    pub const OPEN_ALIAS: u16 = 27;
+    pub const GET_MEMBERS_IN_ALIAS: u16 = 33;
 }
 
 const STATUS_MORE_ENTRIES: u32 = 0x0000_0105;
@@ -70,18 +74,23 @@ fn sid_name_use(use_val: u32) -> &'static str {
     }
 }
 
-/// Handles + identifiers for an opened SAM account domain.
+/// Handles + identifiers for the opened SAM domains.
 pub struct SamrDomain {
     /// Server handle from Connect2 (retained for completeness / future handle close).
     #[allow(dead_code)]
     pub server: SamrHandle,
-    pub domain: SamrHandle,
-    pub domain_name: String,
+    /// Account (primary) domain handle + name + SID.
+    pub account: SamrHandle,
+    pub account_name: String,
     pub domain_sid: String,
+    /// Builtin domain (S-1-5-32) handle + SID, if present.
+    pub builtin: Option<SamrHandle>,
+    pub builtin_sid: Option<String>,
 }
 
-/// Bind SAMR on the pipe, connect, locate the account (non-"Builtin") domain,
-/// and open it. Shared setup for every extended operation.
+/// Bind SAMR on the pipe, connect, and open both the account (non-"Builtin")
+/// domain and, when present, the Builtin domain. Shared setup for every
+/// extended operation.
 pub async fn setup(pipe: &mut SmbPipe<'_>, server_name: &str) -> Result<SamrDomain> {
     pipe.bind(samr_syntax()).await.map_err(|e| anyhow!("SAMR bind failed: {e}"))?;
 
@@ -97,56 +106,262 @@ pub async fn setup(pipe: &mut SmbPipe<'_>, server_name: &str) -> Result<SamrDoma
     let mut d = NdrDecoder::new(&resp);
     let server = SamrHandle::decode(&mut d).map_err(|e| anyhow!("decode server handle: {e}"))?;
 
-    // Enumerate SAM domains (Builtin + account); pick the account domain.
+    // Enumerate SAM domains (typically Builtin + the account domain).
     let resp = pipe
         .call(opnum::ENUM_DOMAINS, &encode_enum_domains(&server, 0, 0x1000))
         .await
         .map_err(|e| anyhow!("SamrEnumerateDomains failed: {e}"))?;
     let (_next, domains) =
         decode_enum_domains(&resp).map_err(|e| anyhow!("decode domains: {e}"))?;
-    let account = domains
-        .into_iter()
-        .map(|(_, n)| n)
+    let names: Vec<String> = domains.into_iter().map(|(_, n)| n).collect();
+    let account_name = names
+        .iter()
         .find(|n| !n.eq_ignore_ascii_case("Builtin"))
+        .cloned()
         .ok_or_else(|| anyhow!("no account domain found"))?;
 
-    // Lookup the account domain SID.
-    let resp = pipe
-        .call(opnum::LOOKUP_DOMAIN, &encode_lookup_domain(&server, &account))
-        .await
-        .map_err(|e| anyhow!("SamrLookupDomain failed: {e}"))?;
-    let sid = decode_lookup_domain(&resp).map_err(|e| anyhow!("decode domain SID: {e}"))?;
-    let domain_sid = sid_string(sid.revision, sid.identifier_authority, &sid.sub_authorities);
+    let (account, domain_sid) = open_domain_by_name(pipe, &server, &account_name).await?;
 
-    // Open the account domain.
-    let resp = pipe
-        .call(opnum::OPEN_DOMAIN, &encode_open_domain(&server, access::MAXIMUM_ALLOWED, &sid))
-        .await
-        .map_err(|e| anyhow!("SamrOpenDomain failed: {e}"))?;
-    let st = tail_status(&resp)?;
-    if st != 0 {
-        bail!("SamrOpenDomain failed (NTSTATUS 0x{st:08x})");
-    }
-    let mut d = NdrDecoder::new(&resp);
-    let domain = SamrHandle::decode(&mut d).map_err(|e| anyhow!("decode domain handle: {e}"))?;
+    let (builtin, builtin_sid) = if names.iter().any(|n| n.eq_ignore_ascii_case("Builtin")) {
+        match open_domain_by_name(pipe, &server, "Builtin").await {
+            Ok((h, sid)) => (Some(h), Some(sid)),
+            Err(_) => (None, None),
+        }
+    } else {
+        (None, None)
+    };
 
-    Ok(SamrDomain { server, domain, domain_name: account, domain_sid })
+    Ok(SamrDomain { server, account, account_name, domain_sid, builtin, builtin_sid })
 }
 
-/// Enumerate groups (opnum 11) and aliases (opnum 15) in the open domain.
-/// Both reuse the SAMPR_RID_ENUMERATION wire shape of `enumerate_domains`.
+/// Look up a domain by name and open it, returning (handle, SID string).
+async fn open_domain_by_name(
+    pipe: &mut SmbPipe<'_>,
+    server: &SamrHandle,
+    name: &str,
+) -> Result<(SamrHandle, String)> {
+    let resp = pipe
+        .call(opnum::LOOKUP_DOMAIN, &encode_lookup_domain(server, name))
+        .await
+        .map_err(|e| anyhow!("SamrLookupDomain({name}) failed: {e}"))?;
+    let sid = decode_lookup_domain(&resp).map_err(|e| anyhow!("decode {name} SID: {e}"))?;
+    let sid_str = sid_string(sid.revision, sid.identifier_authority, &sid.sub_authorities);
+
+    let resp = pipe
+        .call(opnum::OPEN_DOMAIN, &encode_open_domain(server, access::MAXIMUM_ALLOWED, &sid))
+        .await
+        .map_err(|e| anyhow!("SamrOpenDomain({name}) failed: {e}"))?;
+    let st = tail_status(&resp)?;
+    if st != 0 {
+        bail!("SamrOpenDomain({name}) failed (NTSTATUS 0x{st:08x})");
+    }
+    let mut d = NdrDecoder::new(&resp);
+    let handle = SamrHandle::decode(&mut d).map_err(|e| anyhow!("decode {name} handle: {e}"))?;
+    Ok((handle, sid_str))
+}
+
+/// Enumerate groups (opnum 11) and aliases (opnum 15) — with members — across
+/// both the account domain and the Builtin domain.
 pub async fn enum_groups(pipe: &mut SmbPipe<'_>, dom: &SamrDomain) -> Result<Vec<GroupInfo>> {
     let mut out = Vec::new();
-    for (op, label, gtype) in [
-        (ext_opnum::ENUM_GROUPS, "SamrEnumerateGroupsInDomain", "group"),
-        (ext_opnum::ENUM_ALIASES, "SamrEnumerateAliasesInDomain", "alias"),
-    ] {
-        let list = enum_rid_named(pipe, &dom.domain, op, label).await?;
-        for (rid, name) in list {
-            out.push(GroupInfo { rid, name, group_type: gtype.to_string(), members: Vec::new() });
+
+    // (label, &handle) for each domain to walk.
+    let mut targets: Vec<(String, SamrHandle)> = vec![(dom.account_name.clone(), dom.account)];
+    if let Some(b) = &dom.builtin {
+        targets.push(("BUILTIN".to_string(), *b));
+    }
+
+    for (label, handle) in targets {
+        // Global groups → members are RIDs in this domain.
+        let groups = enum_rid_named(pipe, &handle, ext_opnum::ENUM_GROUPS, "SamrEnumerateGroupsInDomain")
+            .await
+            .unwrap_or_default();
+        for (rid, name) in groups {
+            let members = group_members(pipe, &handle, rid).await.unwrap_or_default();
+            out.push(GroupInfo {
+                rid,
+                name: format!("{label}\\{name}"),
+                group_type: "group".into(),
+                members,
+            });
+        }
+
+        // Aliases (local groups) → members are SIDs (possibly cross-domain).
+        let aliases = enum_rid_named(pipe, &handle, ext_opnum::ENUM_ALIASES, "SamrEnumerateAliasesInDomain")
+            .await
+            .unwrap_or_default();
+        for (rid, name) in aliases {
+            let members = alias_members(pipe, dom, &handle, rid).await.unwrap_or_default();
+            out.push(GroupInfo {
+                rid,
+                name: format!("{label}\\{name}"),
+                group_type: "alias".into(),
+                members,
+            });
         }
     }
     Ok(out)
+}
+
+/// Open a group/alias sub-handle: request is DomainHandle + DesiredAccess + Rid.
+async fn open_sub(
+    pipe: &mut SmbPipe<'_>,
+    domain: &SamrHandle,
+    op: u16,
+    rid: u32,
+) -> Result<SamrHandle> {
+    let mut e = NdrEncoder::new();
+    domain.encode(&mut e);
+    e.u32(access::MAXIMUM_ALLOWED);
+    e.u32(rid);
+    let resp = pipe.call(op, &e.into_bytes()).await.map_err(|e| anyhow!("open(rid {rid}): {e}"))?;
+    let st = tail_status(&resp)?;
+    if st != 0 {
+        bail!("open(rid {rid}) failed (NTSTATUS 0x{st:08x})");
+    }
+    let mut d = NdrDecoder::new(&resp);
+    SamrHandle::decode(&mut d).map_err(|e| anyhow!("decode sub-handle: {e}"))
+}
+
+/// Resolve the members of a global group: OpenGroup + GetMembersInGroup → RIDs,
+/// then LookupIdsInDomain on the same domain.
+async fn group_members(
+    pipe: &mut SmbPipe<'_>,
+    domain: &SamrHandle,
+    group_rid: u32,
+) -> Result<Vec<String>> {
+    let gh = open_sub(pipe, domain, ext_opnum::OPEN_GROUP, group_rid).await?;
+    let mut e = NdrEncoder::new();
+    gh.encode(&mut e);
+    let resp = pipe
+        .call(ext_opnum::GET_MEMBERS_IN_GROUP, &e.into_bytes())
+        .await
+        .map_err(|e| anyhow!("GetMembersInGroup: {e}"))?;
+    let st = tail_status(&resp)?;
+    if st != 0 {
+        bail!("GetMembersInGroup failed (NTSTATUS 0x{st:08x})");
+    }
+    let rids = decode_member_rids(&resp)?;
+    if rids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let resolved = lookup_ids(pipe, domain, &rids).await.unwrap_or_default();
+    Ok(resolved.into_iter().filter(|(_, n, _)| !n.is_empty()).map(|(_, n, _)| n).collect())
+}
+
+/// Decode SAMPR_GET_MEMBERS_BUFFER → member RIDs (attributes skipped).
+fn decode_member_rids(stub: &[u8]) -> Result<Vec<u32>> {
+    let mut d = NdrDecoder::new(stub);
+    let buf_ref = d.u32().map_err(|e| anyhow!("members buf ref: {e}"))?;
+    if buf_ref == 0 {
+        return Ok(Vec::new());
+    }
+    let count = d.u32().map_err(|e| anyhow!("member count: {e}"))? as usize;
+    let members_ref = d.u32().map_err(|e| anyhow!("members ref: {e}"))?;
+    let _attrs_ref = d.u32().map_err(|e| anyhow!("attrs ref: {e}"))?;
+    let mut rids = Vec::new();
+    if members_ref != 0 {
+        let _max = d.u32().map_err(|e| anyhow!("members max: {e}"))?;
+        for _ in 0..count {
+            rids.push(d.u32().map_err(|e| anyhow!("member rid: {e}"))?);
+        }
+    }
+    Ok(rids)
+}
+
+/// Resolve the members of an alias: OpenAlias + GetMembersInAlias → SIDs, then
+/// resolve each SID to a name when it belongs to a known (account/Builtin)
+/// domain, otherwise keep the raw SID string.
+async fn alias_members(
+    pipe: &mut SmbPipe<'_>,
+    dom: &SamrDomain,
+    domain: &SamrHandle,
+    alias_rid: u32,
+) -> Result<Vec<String>> {
+    let ah = open_sub(pipe, domain, ext_opnum::OPEN_ALIAS, alias_rid).await?;
+    let mut e = NdrEncoder::new();
+    ah.encode(&mut e);
+    let resp = pipe
+        .call(ext_opnum::GET_MEMBERS_IN_ALIAS, &e.into_bytes())
+        .await
+        .map_err(|e| anyhow!("GetMembersInAlias: {e}"))?;
+    let st = tail_status(&resp)?;
+    if st != 0 {
+        bail!("GetMembersInAlias failed (NTSTATUS 0x{st:08x})");
+    }
+    let sids = decode_sid_array(&resp)?;
+
+    let mut out = Vec::new();
+    for sid in sids {
+        out.push(resolve_member_sid(pipe, dom, &sid).await);
+    }
+    Ok(out)
+}
+
+/// Decode SAMPR_PSID_ARRAY → a list of SID strings.
+fn decode_sid_array(stub: &[u8]) -> Result<Vec<String>> {
+    let mut d = NdrDecoder::new(stub);
+    let count = d.u32().map_err(|e| anyhow!("sid array count: {e}"))? as usize;
+    let arr_ref = d.u32().map_err(|e| anyhow!("sid array ref: {e}"))?;
+    if arr_ref == 0 || count == 0 {
+        return Ok(Vec::new());
+    }
+    let _max = d.u32().map_err(|e| anyhow!("sid array max: {e}"))?;
+    // Array of SAMPR_SID_INFORMATION — each a single PRPC_SID referent.
+    let mut refs = Vec::with_capacity(count);
+    for _ in 0..count {
+        refs.push(d.u32().map_err(|e| anyhow!("sid ptr: {e}"))?);
+    }
+    let mut out = Vec::with_capacity(count);
+    for r in refs {
+        if r == 0 {
+            continue;
+        }
+        // RPC_SID: max_count, revision, sub_count, 6-byte authority, sub-authorities.
+        let _max = d.u32().map_err(|e| anyhow!("sid max: {e}"))?;
+        let revision = d.u8().map_err(|e| anyhow!("sid revision: {e}"))?;
+        let sub_count = d.u8().map_err(|e| anyhow!("sid subcount: {e}"))? as usize;
+        let auth_bytes = d.read_bytes(6).map_err(|e| anyhow!("sid authority: {e}"))?;
+        let authority = auth_bytes.iter().fold(0u64, |acc, &b| (acc << 8) | b as u64);
+        let mut subs = Vec::with_capacity(sub_count);
+        for _ in 0..sub_count {
+            subs.push(d.u32().map_err(|e| anyhow!("sid sub: {e}"))?);
+        }
+        out.push(sid_string(revision, authority, &subs));
+    }
+    Ok(out)
+}
+
+/// Resolve an alias member SID to `DOMAIN\name` when it belongs to the account
+/// or Builtin domain; otherwise return the SID string unchanged.
+async fn resolve_member_sid(pipe: &mut SmbPipe<'_>, dom: &SamrDomain, sid: &str) -> String {
+    // Try account domain, then Builtin.
+    if let Some(rid) = rid_within(sid, &dom.domain_sid) {
+        if let Ok(v) = lookup_ids(pipe, &dom.account, &[rid]).await {
+            if let Some((_, name, _)) = v.into_iter().find(|(_, n, _)| !n.is_empty()) {
+                return format!("{}\\{}", dom.account_name, name);
+            }
+        }
+    }
+    if let (Some(bh), Some(bsid)) = (&dom.builtin, &dom.builtin_sid) {
+        if let Some(rid) = rid_within(sid, bsid) {
+            if let Ok(v) = lookup_ids(pipe, bh, &[rid]).await {
+                if let Some((_, name, _)) = v.into_iter().find(|(_, n, _)| !n.is_empty()) {
+                    return format!("BUILTIN\\{name}");
+                }
+            }
+        }
+    }
+    sid.to_string()
+}
+
+/// If `sid` is `domain_sid` + one trailing RID, return that RID.
+fn rid_within(sid: &str, domain_sid: &str) -> Option<u32> {
+    let rest = sid.strip_prefix(domain_sid)?.strip_prefix('-')?;
+    if rest.contains('-') {
+        return None; // deeper than one RID below the domain
+    }
+    rest.parse().ok()
 }
 
 /// Shared paged enumeration for SAMPR_RID_ENUMERATION responses (users/groups/aliases).
@@ -162,8 +377,11 @@ async fn enum_rid_named(
         // Same input shape as SamrEnumerateDomainsInSamServer: (handle, ctx, prefMax).
         let stub = encode_enum_domains(domain, resume, 0x1000);
         let resp = pipe.call(op, &stub).await.map_err(|e| anyhow!("{label} failed: {e}"))?;
+        if std::env::var("ENUM4MAC_DEBUG").is_ok() {
+            eprintln!("[debug] {label} resp ({} bytes): {:02x?}", resp.len(), resp);
+        }
         let (next, list) =
-            decode_enum_domains(&resp).map_err(|e| anyhow!("{label} decode: {e}"))?;
+            decode_rid_enumeration(&resp).map_err(|e| anyhow!("{label} decode: {e}"))?;
         let got = list.len();
         all.extend(list);
         let st = tail_status(&resp)?;
@@ -181,13 +399,66 @@ async fn enum_rid_named(
     Ok(all)
 }
 
+/// Decode a SAMPR_ENUMERATION_BUFFER response (shared by EnumUsers / EnumGroups
+/// / EnumAliases): `(EnumerationContext, [(rid, name)])`.
+///
+/// Unlike the crate's `decode_enum_domains`, this correctly handles a **null
+/// array pointer** (zero entries), where the conformant `max_count` word is
+/// absent — the case Samba returns for a standalone server with no domain
+/// groups, which made the crate helper underrun.
+fn decode_rid_enumeration(stub: &[u8]) -> Result<(u32, Vec<(u32, String)>)> {
+    let tail = tail_status(stub)?;
+    if tail != 0 && tail != STATUS_MORE_ENTRIES {
+        bail!("enumeration failed (NTSTATUS 0x{tail:08x})");
+    }
+    let mut d = NdrDecoder::new(stub);
+    let resume = d.u32().map_err(|e| anyhow!("resume: {e}"))?;
+    let buffer_ref = d.u32().map_err(|e| anyhow!("buffer ref: {e}"))?;
+    if buffer_ref == 0 {
+        return Ok((resume, Vec::new()));
+    }
+    let entries = d.u32().map_err(|e| anyhow!("entries: {e}"))? as usize;
+    let array_ref = d.u32().map_err(|e| anyhow!("array ref: {e}"))?;
+    if array_ref == 0 || entries == 0 {
+        // No conformant array follows when the pointer is null / list is empty.
+        return Ok((resume, Vec::new()));
+    }
+    let max_count = d.u32().map_err(|e| anyhow!("max count: {e}"))? as usize;
+    if entries > max_count {
+        bail!("EntriesRead={entries} exceeds max_count={max_count}");
+    }
+    // Bounded-alloc guard: each entry is ≥12 wire bytes (rid + ustring header).
+    if entries.checked_mul(12).is_none_or(|need| need > d.remaining()) {
+        bail!("EntriesRead={entries} exceeds remaining stub");
+    }
+
+    let mut headers = Vec::with_capacity(entries);
+    for _ in 0..entries {
+        let rid = d.u32().map_err(|e| anyhow!("rid: {e}"))?;
+        let _len = d.u16().map_err(|e| anyhow!("name len: {e}"))?;
+        let _max = d.u16().map_err(|e| anyhow!("name max: {e}"))?;
+        let name_ref = d.u32().map_err(|e| anyhow!("name ref: {e}"))?;
+        headers.push((rid, name_ref));
+    }
+    let mut out = Vec::with_capacity(entries);
+    for (rid, name_ref) in headers {
+        let name = if name_ref != 0 {
+            d.conformant_varying_wstr().map_err(|e| anyhow!("name: {e}"))?
+        } else {
+            String::new()
+        };
+        out.push((rid, name));
+    }
+    Ok((resume, out))
+}
+
 /// Query the domain password policy (opnum 8, DomainPasswordInformation).
 pub async fn password_policy(
     pipe: &mut SmbPipe<'_>,
     dom: &SamrDomain,
 ) -> Result<PasswordPolicy> {
     let mut e = NdrEncoder::new();
-    dom.domain.encode(&mut e); // DomainHandle (20 bytes)
+    dom.account.encode(&mut e); // DomainHandle (20 bytes)
     e.u16(DOMAIN_PASSWORD_INFORMATION); // DomainInformationClass (enum16)
     let resp = pipe
         .call(ext_opnum::QUERY_INFO_DOMAIN, &e.into_bytes())
@@ -197,7 +468,46 @@ pub async fn password_policy(
     if st != 0 {
         bail!("SamrQueryInformationDomain failed (NTSTATUS 0x{st:08x})");
     }
-    decode_password_info(&resp)
+    let mut policy = decode_password_info(&resp)?;
+
+    // Best-effort lockout info (class 12); failure leaves the field unset.
+    if let Ok(threshold) = query_lockout_threshold(pipe, dom).await {
+        policy.lockout_threshold = Some(threshold);
+    }
+    Ok(policy)
+}
+
+const DOMAIN_LOCKOUT_INFORMATION: u16 = 12;
+
+/// Query DomainLockoutInformation (class 12) and return the lockout threshold.
+async fn query_lockout_threshold(pipe: &mut SmbPipe<'_>, dom: &SamrDomain) -> Result<u32> {
+    let mut e = NdrEncoder::new();
+    dom.account.encode(&mut e);
+    e.u16(DOMAIN_LOCKOUT_INFORMATION);
+    let resp = pipe
+        .call(ext_opnum::QUERY_INFO_DOMAIN, &e.into_bytes())
+        .await
+        .map_err(|e| anyhow!("SamrQueryInformationDomain(lockout) failed: {e}"))?;
+    let st = tail_status(&resp)?;
+    if st != 0 {
+        bail!("lockout query failed (NTSTATUS 0x{st:08x})");
+    }
+    // Wire: info ptr (u32), discriminant (u16=12), pad→8, LockoutDuration (i64),
+    // LockoutObservationWindow (i64), LockoutThreshold (u16).
+    let mut d = NdrDecoder::new(&resp);
+    let ptr = d.u32().map_err(|e| anyhow!("lockout ptr: {e}"))?;
+    if ptr == 0 {
+        bail!("lockout query returned null buffer");
+    }
+    let disc = d.u16().map_err(|e| anyhow!("lockout disc: {e}"))?;
+    if disc != DOMAIN_LOCKOUT_INFORMATION {
+        bail!("unexpected lockout info class: {disc}");
+    }
+    d.align(8);
+    let _lockout_duration = d.u64().map_err(|e| anyhow!("lockout duration: {e}"))?;
+    let _observation = d.u64().map_err(|e| anyhow!("observation window: {e}"))?;
+    let threshold = d.u16().map_err(|e| anyhow!("lockout threshold: {e}"))? as u32;
+    Ok(threshold)
 }
 
 /// Decode the SAMPR_DOMAIN_INFO_BUFFER for DomainPasswordInformation.
@@ -252,40 +562,59 @@ fn filetime_delta_to_days(delta: i64) -> Option<i64> {
     Some((secs / 86_400) as i64)
 }
 
-/// RID cycling via SamrLookupIdsInDomain (opnum 18): resolve each RID in the
-/// open domain to a name + SID_NAME_USE. Unmapped RIDs are skipped.
+/// RID cycling via SamrLookupIdsInDomain (opnum 18): resolve each RID against
+/// both the account domain and the Builtin domain to a name + SID_NAME_USE.
+/// Unmapped / Unknown / Invalid RIDs are skipped.
 pub async fn rid_cycle(
     pipe: &mut SmbPipe<'_>,
     dom: &SamrDomain,
     rids: &[u32],
 ) -> Result<Vec<UserInfo>> {
     let mut out = Vec::new();
-    // SamrLookupIdsInDomain caps Count at 1000 per call.
-    for chunk in rids.chunks(1000) {
-        let stub = encode_lookup_ids(&dom.domain, chunk);
-        let resp = pipe
-            .call(ext_opnum::LOOKUP_IDS, &stub)
-            .await
-            .map_err(|e| anyhow!("SamrLookupIdsInDomain failed: {e}"))?;
-        let st = tail_status(&resp)?;
-        if st == STATUS_NONE_MAPPED {
-            continue; // none of this chunk resolved
-        }
-        if st != 0 && st != STATUS_SOME_NOT_MAPPED {
-            bail!("SamrLookupIdsInDomain failed (NTSTATUS 0x{st:08x})");
-        }
-        let resolved = decode_lookup_ids(&resp, chunk)?;
+
+    let mut domains: Vec<(String, SamrHandle)> = vec![(dom.account_name.clone(), dom.account)];
+    if let Some(b) = &dom.builtin {
+        domains.push(("BUILTIN".to_string(), *b));
+    }
+
+    for (label, handle) in domains {
+        let resolved = lookup_ids(pipe, &handle, rids).await.unwrap_or_default();
         for (rid, name, use_val) in resolved {
             if name.is_empty() || use_val == 8 || use_val == 7 {
                 continue; // Unknown / Invalid
             }
             out.push(UserInfo {
                 rid,
-                name: format!("{}\\{}", dom.domain_name, name),
+                name: format!("{label}\\{name}"),
                 description: Some(sid_name_use(use_val).to_string()),
                 full_name: None,
             });
         }
+    }
+    Ok(out)
+}
+
+/// Resolve a batch of RIDs against one open domain (chunked at 1000 per call).
+async fn lookup_ids(
+    pipe: &mut SmbPipe<'_>,
+    domain: &SamrHandle,
+    rids: &[u32],
+) -> Result<Vec<(u32, String, u32)>> {
+    let mut out = Vec::new();
+    for chunk in rids.chunks(1000) {
+        let stub = encode_lookup_ids(domain, chunk);
+        let resp = pipe
+            .call(ext_opnum::LOOKUP_IDS, &stub)
+            .await
+            .map_err(|e| anyhow!("SamrLookupIdsInDomain failed: {e}"))?;
+        let st = tail_status(&resp)?;
+        if st == STATUS_NONE_MAPPED {
+            continue;
+        }
+        if st != 0 && st != STATUS_SOME_NOT_MAPPED {
+            bail!("SamrLookupIdsInDomain failed (NTSTATUS 0x{st:08x})");
+        }
+        out.extend(decode_lookup_ids(&resp, chunk)?);
     }
     Ok(out)
 }
@@ -398,6 +727,57 @@ mod tests {
         assert_eq!(pol.complexity, Some(true));
         assert_eq!(pol.max_age_days, Some(42));
         assert_eq!(pol.min_age_days, None);
+    }
+
+    #[test]
+    fn decode_rid_enumeration_empty_null_array() {
+        // Exact 24-byte response captured from Samba EnumGroups with 0 groups:
+        // resume=0, buffer_ref=non-null, entries=0, array_ref=NULL, count=0, status=0.
+        // (No conformant max_count because the array pointer is null.)
+        let bytes: [u8; 24] = [
+            0x00, 0x00, 0x00, 0x00, // resume
+            0x00, 0x00, 0x02, 0x00, // buffer_ref (non-null)
+            0x00, 0x00, 0x00, 0x00, // entries = 0
+            0x00, 0x00, 0x00, 0x00, // array_ref = NULL
+            0x00, 0x00, 0x00, 0x00, // count_returned = 0
+            0x00, 0x00, 0x00, 0x00, // status = 0
+        ];
+        let (resume, list) = decode_rid_enumeration(&bytes).unwrap();
+        assert_eq!(resume, 0);
+        assert!(list.is_empty());
+    }
+
+    #[test]
+    fn decode_rid_enumeration_two_entries() {
+        let mut b = Vec::new();
+        b.extend_from_slice(&0u32.to_le_bytes()); // resume
+        b.extend_from_slice(&0x0002_0000u32.to_le_bytes()); // buffer_ref non-null
+        b.extend_from_slice(&2u32.to_le_bytes()); // entries
+        b.extend_from_slice(&0x0002_0004u32.to_le_bytes()); // array_ref non-null
+        b.extend_from_slice(&2u32.to_le_bytes()); // max_count
+        for (rid, s) in [(512u32, "Domain Admins"), (513u32, "Domain Users")] {
+            let blen = (s.encode_utf16().count() * 2) as u16;
+            b.extend_from_slice(&rid.to_le_bytes());
+            b.extend_from_slice(&blen.to_le_bytes()); // Length
+            b.extend_from_slice(&blen.to_le_bytes()); // MaxLength
+            b.extend_from_slice(&1u32.to_le_bytes()); // name ref
+        }
+        for s in ["Domain Admins", "Domain Users"] {
+            let units: Vec<u16> = s.encode_utf16().collect();
+            b.extend_from_slice(&(units.len() as u32).to_le_bytes()); // max_count
+            b.extend_from_slice(&0u32.to_le_bytes()); // offset
+            b.extend_from_slice(&(units.len() as u32).to_le_bytes()); // actual_count
+            for u in units {
+                b.extend_from_slice(&u.to_le_bytes());
+            }
+            if b.len() % 4 != 0 {
+                b.extend_from_slice(&[0, 0]);
+            }
+        }
+        b.extend_from_slice(&2u32.to_le_bytes()); // count_returned
+        b.extend_from_slice(&0u32.to_le_bytes()); // status
+        let (_resume, list) = decode_rid_enumeration(&b).unwrap();
+        assert_eq!(list, vec![(512, "Domain Admins".into()), (513, "Domain Users".into())]);
     }
 
     #[test]

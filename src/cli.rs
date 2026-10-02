@@ -61,6 +61,10 @@ pub struct Cli {
     #[arg(short = 'R', long = "rid-range", default_value = "500-550,1000-1050")]
     pub rid_range: String,
 
+    /// UDP port for NetBIOS name service (default 137; override for testing).
+    #[arg(long = "nbt-port", default_value_t = 137)]
+    pub nbt_port: u16,
+
     /// Be detailed, applies to user and share enumeration.
     #[arg(short = 'd', long = "detail")]
     pub detail: bool,

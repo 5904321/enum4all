@@ -5,6 +5,7 @@ mod netbios;
 mod output;
 mod samr_ext;
 mod smb;
+mod srvsvc_ext;
 
 use clap::Parser;
 use cli::Cli;
@@ -53,7 +54,8 @@ async fn run_netbios(args: &Cli, report: &mut Report) {
     if !args.json {
         output::section("NetBIOS Name Service");
     }
-    match netbios::node_status(&args.target, args.timeout).await {
+    let host = smb::bare_host(&args.target);
+    match netbios::node_status(&host, args.nbt_port, args.timeout).await {
         Ok(status) => {
             if let Some(wg) = &status.workgroup {
                 report.workgroup = Some(wg.clone());
@@ -125,7 +127,7 @@ async fn run_os(args: &Cli, report: &mut Report) {
 /// Authenticated/null-session MSRPC enumeration: shares, users, sessions.
 async fn run_smb_rpc(args: &Cli, report: &mut Report) {
     let need_session =
-        args.shares || args.users || args.groups || args.pass_pol || args.rid_cycle;
+        args.shares || args.users || args.groups || args.pass_pol || args.rid_cycle || args.os;
     if !need_session {
         return;
     }
@@ -155,6 +157,34 @@ async fn run_smb_rpc(args: &Cli, report: &mut Report) {
                 return;
             }
         };
+
+    // OS enrichment via NetrServerGetInfo (merges into the probe's OsInfo).
+    if args.os {
+        match session.server_info().await {
+            Ok(si) => {
+                if !args.json {
+                    output::section("Server Info (SRVSVC)");
+                    if let Some(os) = &si.server_os {
+                        output::good(format!("Server OS ......... {os}"));
+                    }
+                    if let Some(cn) = &si.computer_name {
+                        output::good(format!("Computer name ..... {cn}"));
+                    }
+                }
+                let entry = report.os_info.get_or_insert_with(Default::default);
+                if si.server_os.is_some() {
+                    entry.server_os = si.server_os;
+                }
+                if si.server_version.is_some() {
+                    entry.server_version = si.server_version;
+                }
+                if si.computer_name.is_some() {
+                    entry.computer_name = si.computer_name;
+                }
+            }
+            Err(e) => report.note_error("server_info", e.to_string()),
+        }
+    }
 
     // Shares (SRVSVC) ------------------------------------------------------
     if args.shares {
@@ -246,6 +276,9 @@ async fn run_smb_rpc(args: &Cli, report: &mut Report) {
                     }
                     for g in &groups {
                         output::good(format!("rid {:<6} [{}] {}", g.rid, g.group_type, g.name));
+                        for m in &g.members {
+                            println!("        └─ {m}");
+                        }
                     }
                 }
                 report.groups = groups;
@@ -283,6 +316,10 @@ async fn run_smb_rpc(args: &Cli, report: &mut Report) {
                     }
                     if let Some(v) = pol.complexity {
                         output::good(format!("Complexity required ........ {v}"));
+                    }
+                    if let Some(v) = pol.lockout_threshold {
+                        let s = if v == 0 { "disabled".to_string() } else { v.to_string() };
+                        output::good(format!("Account lockout threshold .. {s}"));
                     }
                 }
                 report.password_policy = Some(pol);

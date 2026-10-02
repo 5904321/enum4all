@@ -205,10 +205,10 @@ fn parse_node_status_response(buf: &[u8]) -> Result<NodeStatus> {
     Ok(status)
 }
 
-/// Perform a NetBIOS node-status query against `host` (port 137/udp).
-pub async fn node_status(host: &str, timeout_secs: u64) -> Result<NodeStatus> {
-    // Resolve to a socket address on port 137.
-    let addr: SocketAddr = tokio::net::lookup_host((host, 137u16))
+/// Perform a NetBIOS node-status query against `host` on `port` (137/udp by default).
+pub async fn node_status(host: &str, port: u16, timeout_secs: u64) -> Result<NodeStatus> {
+    // Resolve to a socket address on the NetBIOS name-service port.
+    let addr: SocketAddr = tokio::net::lookup_host((host, port))
         .await
         .with_context(|| format!("failed to resolve {host}"))?
         .next()
