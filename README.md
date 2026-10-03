@@ -18,10 +18,18 @@ dependencies** — no Samba install required.
 
 ## Install / build
 
+Prebuilt binaries are attached to each [GitHub Release](https://github.com/5904321/enum4all/releases).
+Or build from source:
+
 ```bash
 cargo build --release
 ./target/release/enum4all --help
 ```
+
+Releases are automated: pushing a `vX.Y.Z` tag triggers a GitHub Actions
+workflow ([`.github/workflows/release.yml`](.github/workflows/release.yml)) that
+builds Linux, macOS (Apple Silicon + Intel) and Windows binaries and attaches
+them to the release.
 
 ## Usage
 

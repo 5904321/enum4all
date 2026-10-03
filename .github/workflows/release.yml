@@ -1,0 +1,89 @@
+name: release
+
+# Builds cross-platform binaries and attaches them to a GitHub Release.
+# Triggers automatically when a version tag (v*) is pushed, and can also be
+# run manually against an existing tag to backfill binaries.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to build and attach binaries to (e.g. v0.1.0)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.t.outputs.tag }}
+    steps:
+      - id: t
+        run: echo "tag=${{ github.event.inputs.tag || github.ref_name }}" >> "$GITHUB_OUTPUT"
+
+  # Ensure the release exists (auto-generated notes for new tags; a release that
+  # already exists — e.g. v0.1.0 — is left untouched so its notes are preserved).
+  create_release:
+    needs: setup
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ensure release exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ needs.setup.outputs.tag }}"
+          gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create "$tag" --repo "$GITHUB_REPOSITORY" \
+                 --generate-notes --title "enum4all $tag"
+
+  build:
+    needs: [setup, create_release]
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: macos-13
+            target: x86_64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.setup.outputs.tag }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package
+        id: pkg
+        shell: bash
+        run: |
+          tag="${{ needs.setup.outputs.tag }}"
+          ext=""
+          [ "${{ runner.os }}" = "Windows" ] && ext=".exe"
+          mkdir -p enum4all
+          cp "target/${{ matrix.target }}/release/enum4all${ext}" enum4all/
+          cp README.md LICENSE enum4all/
+          asset="enum4all-${tag}-${{ matrix.target }}.tar.gz"
+          tar -czf "$asset" enum4all
+          echo "asset=$asset" >> "$GITHUB_OUTPUT"
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.setup.outputs.tag }}
+          files: ${{ steps.pkg.outputs.asset }}
+          fail_on_unmatched_files: true
