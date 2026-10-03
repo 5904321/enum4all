@@ -32,7 +32,11 @@ async fn with_timeout<T>(
 fn with_port(host: &str) -> String {
     if host.starts_with('[') {
         // Bracketed IPv6: "[::1]" (no port) or "[::1]:445" (port present).
-        if host.contains("]:") { host.to_string() } else { format!("{host}:445") }
+        if host.contains("]:") {
+            host.to_string()
+        } else {
+            format!("{host}:445")
+        }
     } else {
         match host.matches(':').count() {
             // host or ipv4, no port.
@@ -54,12 +58,11 @@ pub fn bare_host(host: &str) -> String {
         }
     }
     // host:port (but not bare IPv6 with multiple colons)
-    if host.matches(':').count() == 1 {
-        if let Some((h, p)) = host.rsplit_once(':') {
-            if p.parse::<u16>().is_ok() {
-                return h.to_string();
-            }
-        }
+    if host.matches(':').count() == 1
+        && let Some((h, p)) = host.rsplit_once(':')
+        && p.parse::<u16>().is_ok()
+    {
+        return h.to_string();
     }
     host.to_string()
 }
@@ -103,7 +106,11 @@ impl SmbSession {
                 .map_err(|e| anyhow!("negotiate failed: {e}"))?;
             Ok(OsInfo {
                 dialect: Some(dialect_name(dialect)),
-                signing: Some(if signing { "required".into() } else { "not required".into() }),
+                signing: Some(if signing {
+                    "required".into()
+                } else {
+                    "not required".into()
+                }),
                 ..Default::default()
             })
         })
@@ -153,7 +160,12 @@ impl SmbSession {
         })
         .await?;
 
-        Ok(SmbSession { client, server, null_session, dur })
+        Ok(SmbSession {
+            client,
+            server,
+            null_session,
+            dur,
+        })
     }
 
     /// Enumerate shares via SRVSVC NetrShareEnum (level 1).
@@ -177,7 +189,11 @@ impl SmbSession {
                 .map(|s| ShareInfo {
                     name: s.netname.clone(),
                     share_type: s.stype_label().to_string(),
-                    comment: if s.remark.is_empty() { None } else { Some(s.remark.clone()) },
+                    comment: if s.remark.is_empty() {
+                        None
+                    } else {
+                        Some(s.remark.clone())
+                    },
                     access: None,
                 })
                 .collect())
@@ -192,7 +208,10 @@ impl SmbSession {
         match timeout(self.dur, self.client.tree_connect(&unc)).await {
             Ok(Ok(())) => {
                 // Reconnect IPC$ so later pipe opens keep working.
-                let _ = self.client.tree_connect(&format!(r"\\{}\IPC$", self.server)).await;
+                let _ = self
+                    .client
+                    .tree_connect(&format!(r"\\{}\IPC$", self.server))
+                    .await;
                 "OK".into()
             }
             Ok(Err(_)) => "DENIED".into(),
@@ -219,7 +238,11 @@ impl SmbSession {
                 .map_err(|e| anyhow!("SAMR EnumDomainUsers failed: {e}"))?;
             Ok(users
                 .into_iter()
-                .map(|(rid, name)| UserInfo { rid, name, ..Default::default() })
+                .map(|(rid, name)| UserInfo {
+                    rid,
+                    name,
+                    ..Default::default()
+                })
                 .collect())
         })
         .await
@@ -264,7 +287,10 @@ impl SmbSession {
                 .enum_users()
                 .await
                 .map_err(|e| anyhow!("NetrWkstaUserEnum failed: {e}"))?;
-            Ok(users.into_iter().map(|u| (u.username, u.logon_domain)).collect())
+            Ok(users
+                .into_iter()
+                .map(|u| (u.username, u.logon_domain))
+                .collect())
         })
         .await
     }

@@ -214,15 +214,23 @@ pub async fn node_status(host: &str, port: u16, timeout_secs: u64) -> Result<Nod
         .next()
         .with_context(|| format!("no address for {host}"))?;
 
-    let bind_addr = if addr.is_ipv6() { "[::]:0" } else { "0.0.0.0:0" };
+    let bind_addr = if addr.is_ipv6() {
+        "[::]:0"
+    } else {
+        "0.0.0.0:0"
+    };
     let sock = UdpSocket::bind(bind_addr)
         .await
         .context("failed to bind local UDP socket")?;
-    sock.connect(addr).await.with_context(|| format!("failed to connect UDP to {addr}"))?;
+    sock.connect(addr)
+        .await
+        .with_context(|| format!("failed to connect UDP to {addr}"))?;
 
     let txid: u16 = (std::process::id() & 0xFFFF) as u16;
     let req = build_node_status_request(txid);
-    sock.send(&req).await.context("failed to send NBNS request")?;
+    sock.send(&req)
+        .await
+        .context("failed to send NBNS request")?;
 
     let mut buf = vec![0u8; 2048];
     let n = timeout(Duration::from_secs(timeout_secs), sock.recv(&mut buf))

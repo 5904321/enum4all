@@ -16,7 +16,12 @@ fn tail_status(stub: &[u8]) -> Result<u32> {
     if n < 4 {
         bail!("response too short ({n} bytes)");
     }
-    Ok(u32::from_le_bytes([stub[n - 4], stub[n - 3], stub[n - 2], stub[n - 1]]))
+    Ok(u32::from_le_bytes([
+        stub[n - 4],
+        stub[n - 3],
+        stub[n - 2],
+        stub[n - 1],
+    ]))
 }
 
 /// Map the SERVER_INFO_101 platform id to a label.
@@ -34,7 +39,9 @@ fn platform(id: u32) -> &'static str {
 /// Call NetrServerGetInfo(level=101) on an already-bound SRVSVC pipe is not
 /// required; this binds srvsvc itself.
 pub async fn server_info(pipe: &mut SmbPipe<'_>) -> Result<OsInfo> {
-    pipe.bind(srvsvc_syntax()).await.map_err(|e| anyhow!("SRVSVC bind failed: {e}"))?;
+    pipe.bind(srvsvc_syntax())
+        .await
+        .map_err(|e| anyhow!("SRVSVC bind failed: {e}"))?;
 
     // Request: ServerName [in,unique,string] = NULL, Level = 101.
     let mut e = NdrEncoder::new();
@@ -45,7 +52,11 @@ pub async fn server_info(pipe: &mut SmbPipe<'_>) -> Result<OsInfo> {
         .await
         .map_err(|e| anyhow!("NetrServerGetInfo failed: {e}"))?;
     if std::env::var("ENUM4ALL_DEBUG").is_ok() {
-        eprintln!("[debug] NetrServerGetInfo resp ({} bytes): {:02x?}", resp.len(), resp);
+        eprintln!(
+            "[debug] NetrServerGetInfo resp ({} bytes): {:02x?}",
+            resp.len(),
+            resp
+        );
     }
     let st = tail_status(&resp)?;
     if st != 0 {
@@ -78,19 +89,24 @@ fn decode_server_info_101(stub: &[u8]) -> Result<OsInfo> {
     let comment_ref = d.u32().map_err(|e| anyhow!("comment ref: {e}"))?;
 
     let name = if name_ref != 0 {
-        d.conformant_varying_wstr().map_err(|e| anyhow!("name str: {e}"))?
+        d.conformant_varying_wstr()
+            .map_err(|e| anyhow!("name str: {e}"))?
     } else {
         String::new()
     };
     let comment = if comment_ref != 0 {
-        d.conformant_varying_wstr().map_err(|e| anyhow!("comment str: {e}"))?
+        d.conformant_varying_wstr()
+            .map_err(|e| anyhow!("comment str: {e}"))?
     } else {
         String::new()
     };
 
     Ok(OsInfo {
         dialect: None,
-        server_os: Some(format!("{} {version_major}.{version_minor}", platform(platform_id))),
+        server_os: Some(format!(
+            "{} {version_major}.{version_minor}",
+            platform(platform_id)
+        )),
         server_version: Some(format!("{version_major}.{version_minor}")),
         domain: None,
         computer_name: if name.is_empty() { None } else { Some(name) },

@@ -45,7 +45,12 @@ fn tail_status(stub: &[u8]) -> Result<u32> {
     if n < 4 {
         bail!("RPC response too short ({n} bytes)");
     }
-    Ok(u32::from_le_bytes([stub[n - 4], stub[n - 3], stub[n - 2], stub[n - 1]]))
+    Ok(u32::from_le_bytes([
+        stub[n - 4],
+        stub[n - 3],
+        stub[n - 2],
+        stub[n - 1],
+    ]))
 }
 
 /// Format a SID from its components as `S-R-A[-sub...]`.
@@ -92,11 +97,16 @@ pub struct SamrDomain {
 /// domain and, when present, the Builtin domain. Shared setup for every
 /// extended operation.
 pub async fn setup(pipe: &mut SmbPipe<'_>, server_name: &str) -> Result<SamrDomain> {
-    pipe.bind(samr_syntax()).await.map_err(|e| anyhow!("SAMR bind failed: {e}"))?;
+    pipe.bind(samr_syntax())
+        .await
+        .map_err(|e| anyhow!("SAMR bind failed: {e}"))?;
 
     // Connect2 → server handle.
     let resp = pipe
-        .call(opnum::CONNECT2, &encode_connect2(server_name, access::MAXIMUM_ALLOWED))
+        .call(
+            opnum::CONNECT2,
+            &encode_connect2(server_name, access::MAXIMUM_ALLOWED),
+        )
         .await
         .map_err(|e| anyhow!("SamrConnect2 failed: {e}"))?;
     let st = tail_status(&resp)?;
@@ -108,7 +118,10 @@ pub async fn setup(pipe: &mut SmbPipe<'_>, server_name: &str) -> Result<SamrDoma
 
     // Enumerate SAM domains (typically Builtin + the account domain).
     let resp = pipe
-        .call(opnum::ENUM_DOMAINS, &encode_enum_domains(&server, 0, 0x1000))
+        .call(
+            opnum::ENUM_DOMAINS,
+            &encode_enum_domains(&server, 0, 0x1000),
+        )
         .await
         .map_err(|e| anyhow!("SamrEnumerateDomains failed: {e}"))?;
     let (_next, domains) =
@@ -131,7 +144,14 @@ pub async fn setup(pipe: &mut SmbPipe<'_>, server_name: &str) -> Result<SamrDoma
         (None, None)
     };
 
-    Ok(SamrDomain { server, account, account_name, domain_sid, builtin, builtin_sid })
+    Ok(SamrDomain {
+        server,
+        account,
+        account_name,
+        domain_sid,
+        builtin,
+        builtin_sid,
+    })
 }
 
 /// Look up a domain by name and open it, returning (handle, SID string).
@@ -148,7 +168,10 @@ async fn open_domain_by_name(
     let sid_str = sid_string(sid.revision, sid.identifier_authority, &sid.sub_authorities);
 
     let resp = pipe
-        .call(opnum::OPEN_DOMAIN, &encode_open_domain(server, access::MAXIMUM_ALLOWED, &sid))
+        .call(
+            opnum::OPEN_DOMAIN,
+            &encode_open_domain(server, access::MAXIMUM_ALLOWED, &sid),
+        )
         .await
         .map_err(|e| anyhow!("SamrOpenDomain({name}) failed: {e}"))?;
     let st = tail_status(&resp)?;
@@ -173,9 +196,14 @@ pub async fn enum_groups(pipe: &mut SmbPipe<'_>, dom: &SamrDomain) -> Result<Vec
 
     for (label, handle) in targets {
         // Global groups → members are RIDs in this domain.
-        let groups = enum_rid_named(pipe, &handle, ext_opnum::ENUM_GROUPS, "SamrEnumerateGroupsInDomain")
-            .await
-            .unwrap_or_default();
+        let groups = enum_rid_named(
+            pipe,
+            &handle,
+            ext_opnum::ENUM_GROUPS,
+            "SamrEnumerateGroupsInDomain",
+        )
+        .await
+        .unwrap_or_default();
         for (rid, name) in groups {
             let members = group_members(pipe, &handle, rid).await.unwrap_or_default();
             out.push(GroupInfo {
@@ -187,11 +215,18 @@ pub async fn enum_groups(pipe: &mut SmbPipe<'_>, dom: &SamrDomain) -> Result<Vec
         }
 
         // Aliases (local groups) → members are SIDs (possibly cross-domain).
-        let aliases = enum_rid_named(pipe, &handle, ext_opnum::ENUM_ALIASES, "SamrEnumerateAliasesInDomain")
-            .await
-            .unwrap_or_default();
+        let aliases = enum_rid_named(
+            pipe,
+            &handle,
+            ext_opnum::ENUM_ALIASES,
+            "SamrEnumerateAliasesInDomain",
+        )
+        .await
+        .unwrap_or_default();
         for (rid, name) in aliases {
-            let members = alias_members(pipe, dom, &handle, rid).await.unwrap_or_default();
+            let members = alias_members(pipe, dom, &handle, rid)
+                .await
+                .unwrap_or_default();
             out.push(GroupInfo {
                 rid,
                 name: format!("{label}\\{name}"),
@@ -214,7 +249,10 @@ async fn open_sub(
     domain.encode(&mut e);
     e.u32(access::MAXIMUM_ALLOWED);
     e.u32(rid);
-    let resp = pipe.call(op, &e.into_bytes()).await.map_err(|e| anyhow!("open(rid {rid}): {e}"))?;
+    let resp = pipe
+        .call(op, &e.into_bytes())
+        .await
+        .map_err(|e| anyhow!("open(rid {rid}): {e}"))?;
     let st = tail_status(&resp)?;
     if st != 0 {
         bail!("open(rid {rid}) failed (NTSTATUS 0x{st:08x})");
@@ -246,7 +284,11 @@ async fn group_members(
         return Ok(Vec::new());
     }
     let resolved = lookup_ids(pipe, domain, &rids).await.unwrap_or_default();
-    Ok(resolved.into_iter().filter(|(_, n, _)| !n.is_empty()).map(|(_, n, _)| n).collect())
+    Ok(resolved
+        .into_iter()
+        .filter(|(_, n, _)| !n.is_empty())
+        .map(|(_, n, _)| n)
+        .collect())
 }
 
 /// Decode SAMPR_GET_MEMBERS_BUFFER → member RIDs (attributes skipped).
@@ -322,7 +364,9 @@ fn decode_sid_array(stub: &[u8]) -> Result<Vec<String>> {
         let revision = d.u8().map_err(|e| anyhow!("sid revision: {e}"))?;
         let sub_count = d.u8().map_err(|e| anyhow!("sid subcount: {e}"))? as usize;
         let auth_bytes = d.read_bytes(6).map_err(|e| anyhow!("sid authority: {e}"))?;
-        let authority = auth_bytes.iter().fold(0u64, |acc, &b| (acc << 8) | b as u64);
+        let authority = auth_bytes
+            .iter()
+            .fold(0u64, |acc, &b| (acc << 8) | b as u64);
         let mut subs = Vec::with_capacity(sub_count);
         for _ in 0..sub_count {
             subs.push(d.u32().map_err(|e| anyhow!("sid sub: {e}"))?);
@@ -336,21 +380,18 @@ fn decode_sid_array(stub: &[u8]) -> Result<Vec<String>> {
 /// or Builtin domain; otherwise return the SID string unchanged.
 async fn resolve_member_sid(pipe: &mut SmbPipe<'_>, dom: &SamrDomain, sid: &str) -> String {
     // Try account domain, then Builtin.
-    if let Some(rid) = rid_within(sid, &dom.domain_sid) {
-        if let Ok(v) = lookup_ids(pipe, &dom.account, &[rid]).await {
-            if let Some((_, name, _)) = v.into_iter().find(|(_, n, _)| !n.is_empty()) {
-                return format!("{}\\{}", dom.account_name, name);
-            }
-        }
+    if let Some(rid) = rid_within(sid, &dom.domain_sid)
+        && let Ok(v) = lookup_ids(pipe, &dom.account, &[rid]).await
+        && let Some((_, name, _)) = v.into_iter().find(|(_, n, _)| !n.is_empty())
+    {
+        return format!("{}\\{}", dom.account_name, name);
     }
-    if let (Some(bh), Some(bsid)) = (&dom.builtin, &dom.builtin_sid) {
-        if let Some(rid) = rid_within(sid, bsid) {
-            if let Ok(v) = lookup_ids(pipe, bh, &[rid]).await {
-                if let Some((_, name, _)) = v.into_iter().find(|(_, n, _)| !n.is_empty()) {
-                    return format!("BUILTIN\\{name}");
-                }
-            }
-        }
+    if let (Some(bh), Some(bsid)) = (&dom.builtin, &dom.builtin_sid)
+        && let Some(rid) = rid_within(sid, bsid)
+        && let Ok(v) = lookup_ids(pipe, bh, &[rid]).await
+        && let Some((_, name, _)) = v.into_iter().find(|(_, n, _)| !n.is_empty())
+    {
+        return format!("BUILTIN\\{name}");
     }
     sid.to_string()
 }
@@ -376,7 +417,10 @@ async fn enum_rid_named(
     loop {
         // Same input shape as SamrEnumerateDomainsInSamServer: (handle, ctx, prefMax).
         let stub = encode_enum_domains(domain, resume, 0x1000);
-        let resp = pipe.call(op, &stub).await.map_err(|e| anyhow!("{label} failed: {e}"))?;
+        let resp = pipe
+            .call(op, &stub)
+            .await
+            .map_err(|e| anyhow!("{label} failed: {e}"))?;
         if std::env::var("ENUM4ALL_DEBUG").is_ok() {
             eprintln!("[debug] {label} resp ({} bytes): {:02x?}", resp.len(), resp);
         }
@@ -428,7 +472,10 @@ fn decode_rid_enumeration(stub: &[u8]) -> Result<(u32, Vec<(u32, String)>)> {
         bail!("EntriesRead={entries} exceeds max_count={max_count}");
     }
     // Bounded-alloc guard: each entry is ≥12 wire bytes (rid + ustring header).
-    if entries.checked_mul(12).is_none_or(|need| need > d.remaining()) {
+    if entries
+        .checked_mul(12)
+        .is_none_or(|need| need > d.remaining())
+    {
         bail!("EntriesRead={entries} exceeds remaining stub");
     }
 
@@ -443,7 +490,8 @@ fn decode_rid_enumeration(stub: &[u8]) -> Result<(u32, Vec<(u32, String)>)> {
     let mut out = Vec::with_capacity(entries);
     for (rid, name_ref) in headers {
         let name = if name_ref != 0 {
-            d.conformant_varying_wstr().map_err(|e| anyhow!("name: {e}"))?
+            d.conformant_varying_wstr()
+                .map_err(|e| anyhow!("name: {e}"))?
         } else {
             String::new()
         };
@@ -453,10 +501,7 @@ fn decode_rid_enumeration(stub: &[u8]) -> Result<(u32, Vec<(u32, String)>)> {
 }
 
 /// Query the domain password policy (opnum 8, DomainPasswordInformation).
-pub async fn password_policy(
-    pipe: &mut SmbPipe<'_>,
-    dom: &SamrDomain,
-) -> Result<PasswordPolicy> {
+pub async fn password_policy(pipe: &mut SmbPipe<'_>, dom: &SamrDomain) -> Result<PasswordPolicy> {
     let mut e = NdrEncoder::new();
     dom.account.encode(&mut e); // DomainHandle (20 bytes)
     e.u16(DOMAIN_PASSWORD_INFORMATION); // DomainInformationClass (enum16)
@@ -545,8 +590,12 @@ fn decode_password_info(stub: &[u8]) -> Result<PasswordPolicy> {
 
 /// Read an OLD_LARGE_INTEGER (LowPart u32, HighPart i32) as a signed i64.
 fn read_old_large_integer(d: &mut NdrDecoder) -> Result<i64> {
-    let low = d.u32().map_err(|e| anyhow!("read LARGE_INTEGER low: {e}"))?;
-    let high = d.u32().map_err(|e| anyhow!("read LARGE_INTEGER high: {e}"))? as i32;
+    let low = d
+        .u32()
+        .map_err(|e| anyhow!("read LARGE_INTEGER low: {e}"))?;
+    let high = d
+        .u32()
+        .map_err(|e| anyhow!("read LARGE_INTEGER high: {e}"))? as i32;
     Ok(((high as i64) << 32) | (low as i64 & 0xFFFF_FFFF))
 }
 
@@ -659,7 +708,10 @@ fn decode_lookup_ids(stub: &[u8], rids: &[u32]) -> Result<Vec<(u32, String, u32)
     let mut names = Vec::with_capacity(name_count);
     for buf_ref in &headers {
         if *buf_ref != 0 {
-            names.push(d.conformant_varying_wstr().map_err(|e| anyhow!("name str: {e}"))?);
+            names.push(
+                d.conformant_varying_wstr()
+                    .map_err(|e| anyhow!("name str: {e}"))?,
+            );
         } else {
             names.push(String::new());
         }
@@ -691,7 +743,10 @@ mod tests {
 
     #[test]
     fn sid_formatting() {
-        assert_eq!(sid_string(1, 5, &[21, 111, 222, 333]), "S-1-5-21-111-222-333");
+        assert_eq!(
+            sid_string(1, 5, &[21, 111, 222, 333]),
+            "S-1-5-21-111-222-333"
+        );
         assert_eq!(sid_string(1, 5, &[]), "S-1-5");
     }
 
@@ -777,7 +832,10 @@ mod tests {
         b.extend_from_slice(&2u32.to_le_bytes()); // count_returned
         b.extend_from_slice(&0u32.to_le_bytes()); // status
         let (_resume, list) = decode_rid_enumeration(&b).unwrap();
-        assert_eq!(list, vec![(512, "Domain Admins".into()), (513, "Domain Users".into())]);
+        assert_eq!(
+            list,
+            vec![(512, "Domain Admins".into()), (513, "Domain Users".into())]
+        );
     }
 
     #[test]

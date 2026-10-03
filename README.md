@@ -1,5 +1,8 @@
 # enum4all
 
+[![ci](https://github.com/5904321/enum4all/actions/workflows/ci.yml/badge.svg)](https://github.com/5904321/enum4all/actions/workflows/ci.yml)
+[![release](https://github.com/5904321/enum4all/actions/workflows/release.yml/badge.svg)](https://github.com/5904321/enum4all/actions/workflows/release.yml)
+
 A native, self-contained **Rust port of [enum4linux](https://github.com/CiscoCXSecurity/enum4linux)**.
 
 The original `enum4linux` is a Perl wrapper around the Samba client tools

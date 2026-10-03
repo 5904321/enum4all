@@ -126,8 +126,14 @@ pub fn parse_rid_ranges(spec: &str) -> anyhow::Result<Vec<u32>> {
     let mut rids: Vec<u32> = Vec::new();
     for part in spec.split(',').map(str::trim).filter(|s| !s.is_empty()) {
         if let Some((lo, hi)) = part.split_once('-') {
-            let lo: u32 = lo.trim().parse().with_context(|| format!("invalid RID '{lo}'"))?;
-            let hi: u32 = hi.trim().parse().with_context(|| format!("invalid RID '{hi}'"))?;
+            let lo: u32 = lo
+                .trim()
+                .parse()
+                .with_context(|| format!("invalid RID '{lo}'"))?;
+            let hi: u32 = hi
+                .trim()
+                .parse()
+                .with_context(|| format!("invalid RID '{hi}'"))?;
             if lo > hi {
                 bail!("RID range '{part}' is reversed (low > high)");
             }
@@ -136,7 +142,9 @@ pub fn parse_rid_ranges(spec: &str) -> anyhow::Result<Vec<u32>> {
             }
             rids.extend(lo..=hi);
         } else {
-            let rid: u32 = part.parse().with_context(|| format!("invalid RID '{part}'"))?;
+            let rid: u32 = part
+                .parse()
+                .with_context(|| format!("invalid RID '{part}'"))?;
             rids.push(rid);
         }
     }
@@ -151,7 +159,10 @@ mod tests {
 
     #[test]
     fn parse_single_range() {
-        assert_eq!(parse_rid_ranges("500-503").unwrap(), vec![500, 501, 502, 503]);
+        assert_eq!(
+            parse_rid_ranges("500-503").unwrap(),
+            vec![500, 501, 502, 503]
+        );
     }
 
     #[test]
@@ -162,7 +173,10 @@ mod tests {
 
     #[test]
     fn dedup_overlap() {
-        assert_eq!(parse_rid_ranges("500-502,501-503").unwrap(), vec![500, 501, 502, 503]);
+        assert_eq!(
+            parse_rid_ranges("500-502,501-503").unwrap(),
+            vec![500, 501, 502, 503]
+        );
     }
 
     #[test]

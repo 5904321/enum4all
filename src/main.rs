@@ -138,31 +138,36 @@ async fn run_smb_rpc(args: &Cli, report: &mut Report) {
         return;
     }
 
-    let mut session =
-        match SmbSession::open(&args.target, &args.user, &args.pass, &args.workgroup, args.timeout)
-            .await
-        {
-            Ok(s) => {
-                if !args.json {
-                    output::section("SMB Session");
-                    output::good(if s.null_session {
-                        "Null session established (anonymous IPC$ access)"
-                    } else {
-                        "Authenticated session established"
-                    });
-                }
-                s
+    let mut session = match SmbSession::open(
+        &args.target,
+        &args.user,
+        &args.pass,
+        &args.workgroup,
+        args.timeout,
+    )
+    .await
+    {
+        Ok(s) => {
+            if !args.json {
+                output::section("SMB Session");
+                output::good(if s.null_session {
+                    "Null session established (anonymous IPC$ access)"
+                } else {
+                    "Authenticated session established"
+                });
             }
-            Err(e) => {
-                if !args.json {
-                    output::section("SMB Session");
-                    output::error(format!("Could not establish SMB session: {e}"));
-                    output::info("Skipping share/user enumeration (needs a usable session).");
-                }
-                report.note_error("smb_session", e.to_string());
-                return;
+            s
+        }
+        Err(e) => {
+            if !args.json {
+                output::section("SMB Session");
+                output::error(format!("Could not establish SMB session: {e}"));
+                output::info("Skipping share/user enumeration (needs a usable session).");
             }
-        };
+            report.note_error("smb_session", e.to_string());
+            return;
+        }
+    };
 
     // OS enrichment via NetrServerGetInfo (merges into the probe's OsInfo).
     if args.os {
@@ -209,9 +214,20 @@ async fn run_smb_rpc(args: &Cli, report: &mut Report) {
                         output::warn("No shares returned");
                     }
                     for sh in &shares {
-                        let access = sh.access.as_deref().map(|a| format!(" [{a}]")).unwrap_or_default();
-                        let comment = sh.comment.as_deref().map(|c| format!(" - {c}")).unwrap_or_default();
-                        output::good(format!("{:<20} ({}){comment}{access}", sh.name, sh.share_type));
+                        let access = sh
+                            .access
+                            .as_deref()
+                            .map(|a| format!(" [{a}]"))
+                            .unwrap_or_default();
+                        let comment = sh
+                            .comment
+                            .as_deref()
+                            .map(|c| format!(" - {c}"))
+                            .unwrap_or_default();
+                        output::good(format!(
+                            "{:<20} ({}){comment}{access}",
+                            sh.name, sh.share_type
+                        ));
                     }
                 }
                 report.shares = shares;
@@ -251,20 +267,22 @@ async fn run_smb_rpc(args: &Cli, report: &mut Report) {
         }
 
         // Bonus: active sessions + logged-on users (cheap, same session).
-        if let Ok(sessions) = session.sessions().await {
-            if !args.json && !sessions.is_empty() {
-                output::section("Active Sessions (SRVSVC)");
-                for (client, user) in &sessions {
-                    output::good(format!("{user} @ {client}"));
-                }
+        if let Ok(sessions) = session.sessions().await
+            && !args.json
+            && !sessions.is_empty()
+        {
+            output::section("Active Sessions (SRVSVC)");
+            for (client, user) in &sessions {
+                output::good(format!("{user} @ {client}"));
             }
         }
-        if let Ok(logged) = session.logged_on_users().await {
-            if !args.json && !logged.is_empty() {
-                output::section("Logged-on Users (WKSSVC)");
-                for (user, domain) in &logged {
-                    output::good(format!("{domain}\\{user}"));
-                }
+        if let Ok(logged) = session.logged_on_users().await
+            && !args.json
+            && !logged.is_empty()
+        {
+            output::section("Logged-on Users (WKSSVC)");
+            for (user, domain) in &logged {
+                output::good(format!("{domain}\\{user}"));
             }
         }
     }
@@ -310,7 +328,11 @@ async fn run_smb_rpc(args: &Cli, report: &mut Report) {
                         output::warn("No printers returned");
                     }
                     for p in &printers {
-                        let c = if p.comment.is_empty() { String::new() } else { format!(" - {}", p.comment) };
+                        let c = if p.comment.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" - {}", p.comment)
+                        };
                         output::good(format!("{}{c}", p.name));
                     }
                 }
@@ -341,17 +363,21 @@ async fn run_smb_rpc(args: &Cli, report: &mut Report) {
                     }
                     match pol.max_age_days {
                         Some(v) => output::good(format!("Maximum password age ....... {v} days")),
-                        None => output::good("Maximum password age ....... never".to_string()),
+                        None => output::good("Maximum password age ....... never"),
                     }
                     match pol.min_age_days {
                         Some(v) => output::good(format!("Minimum password age ....... {v} days")),
-                        None => output::good("Minimum password age ....... none".to_string()),
+                        None => output::good("Minimum password age ....... none"),
                     }
                     if let Some(v) = pol.complexity {
                         output::good(format!("Complexity required ........ {v}"));
                     }
                     if let Some(v) = pol.lockout_threshold {
-                        let s = if v == 0 { "disabled".to_string() } else { v.to_string() };
+                        let s = if v == 0 {
+                            "disabled".to_string()
+                        } else {
+                            v.to_string()
+                        };
                         output::good(format!("Account lockout threshold .. {s}"));
                     }
                 }
@@ -405,7 +431,10 @@ async fn run_smb_rpc(args: &Cli, report: &mut Report) {
 }
 
 fn print_banner(args: &Cli) {
-    println!("enum4all v{} — native SMB/NetBIOS enumeration", env!("CARGO_PKG_VERSION"));
+    println!(
+        "enum4all v{} — native SMB/NetBIOS enumeration",
+        env!("CARGO_PKG_VERSION")
+    );
     println!("Target .......... {}", args.target);
     println!(
         "Credentials ..... {}",
@@ -414,7 +443,11 @@ fn print_banner(args: &Cli) {
         } else {
             format!(
                 "{}\\{}",
-                if args.workgroup.is_empty() { "." } else { &args.workgroup },
+                if args.workgroup.is_empty() {
+                    "."
+                } else {
+                    &args.workgroup
+                },
                 args.user
             )
         }

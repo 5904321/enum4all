@@ -151,7 +151,10 @@ pub struct Report {
 
 impl Report {
     pub fn new(target: impl Into<String>) -> Self {
-        Report { target: target.into(), ..Default::default() }
+        Report {
+            target: target.into(),
+            ..Default::default()
+        }
     }
 
     /// Record a non-fatal, per-section error.

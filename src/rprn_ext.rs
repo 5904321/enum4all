@@ -23,16 +23,26 @@ fn tail_status(stub: &[u8]) -> Result<u32> {
     if n < 4 {
         bail!("response too short ({n} bytes)");
     }
-    Ok(u32::from_le_bytes([stub[n - 4], stub[n - 3], stub[n - 2], stub[n - 1]]))
+    Ok(u32::from_le_bytes([
+        stub[n - 4],
+        stub[n - 3],
+        stub[n - 2],
+        stub[n - 1],
+    ]))
 }
 
 /// Enumerate local printers (level 1).
 pub async fn enum_printers(pipe: &mut SmbPipe<'_>) -> Result<Vec<PrinterInfo>> {
-    pipe.bind(rprn_syntax()).await.map_err(|e| anyhow!("RPRN bind failed: {e}"))?;
+    pipe.bind(rprn_syntax())
+        .await
+        .map_err(|e| anyhow!("RPRN bind failed: {e}"))?;
 
     // Phase 1: size query (null buffer, cbBuf = 0).
     let resp = pipe
-        .call(OPNUM_ENUM_PRINTERS, &encode_enum(PRINTER_ENUM_LOCAL, 1, None))
+        .call(
+            OPNUM_ENUM_PRINTERS,
+            &encode_enum(PRINTER_ENUM_LOCAL, 1, None),
+        )
         .await
         .map_err(|e| anyhow!("RpcEnumPrinters(size) failed: {e}"))?;
     let needed = decode_size(&resp)?;
@@ -42,11 +52,18 @@ pub async fn enum_printers(pipe: &mut SmbPipe<'_>) -> Result<Vec<PrinterInfo>> {
 
     // Phase 2: fetch with a correctly-sized buffer.
     let resp = pipe
-        .call(OPNUM_ENUM_PRINTERS, &encode_enum(PRINTER_ENUM_LOCAL, 1, Some(needed)))
+        .call(
+            OPNUM_ENUM_PRINTERS,
+            &encode_enum(PRINTER_ENUM_LOCAL, 1, Some(needed)),
+        )
         .await
         .map_err(|e| anyhow!("RpcEnumPrinters(data) failed: {e}"))?;
     if std::env::var("ENUM4ALL_DEBUG").is_ok() {
-        eprintln!("[debug] EnumPrinters resp ({} bytes): {:02x?}", resp.len(), resp);
+        eprintln!(
+            "[debug] EnumPrinters resp ({} bytes): {:02x?}",
+            resp.len(),
+            resp
+        );
     }
     let st = tail_status(&resp)?;
     if st != 0 {
@@ -104,7 +121,10 @@ fn decode_data(stub: &[u8]) -> Result<(Vec<u8>, usize)> {
         return Ok((Vec::new(), 0));
     }
     let max = d.u32().map_err(|e| anyhow!("buffer max: {e}"))? as usize;
-    let buf = d.read_bytes(max).map_err(|e| anyhow!("buffer body: {e}"))?.to_vec();
+    let buf = d
+        .read_bytes(max)
+        .map_err(|e| anyhow!("buffer body: {e}"))?
+        .to_vec();
     d.align(4);
     let _needed = d.u32().map_err(|e| anyhow!("pcbNeeded: {e}"))?;
     let count = d.u32().map_err(|e| anyhow!("pcReturned: {e}"))? as usize;
@@ -124,7 +144,8 @@ fn decode_printer_info_1(buf: &[u8], count: usize) -> Vec<PrinterInfo> {
         let flags = u32::from_le_bytes(buf[base..base + 4].try_into().unwrap());
         let desc_off = u32::from_le_bytes(buf[base + 4..base + 8].try_into().unwrap()) as usize;
         let name_off = u32::from_le_bytes(buf[base + 8..base + 12].try_into().unwrap()) as usize;
-        let comment_off = u32::from_le_bytes(buf[base + 12..base + 16].try_into().unwrap()) as usize;
+        let comment_off =
+            u32::from_le_bytes(buf[base + 12..base + 16].try_into().unwrap()) as usize;
         out.push(PrinterInfo {
             name: read_wstr_at(buf, name_off),
             description: read_wstr_at(buf, desc_off),
@@ -162,15 +183,22 @@ mod tests {
         let mut buf = Vec::new();
         // fixed record: flags, descOff, nameOff, commentOff
         let name_off = 16u32;
-        let name_bytes: Vec<u8> = name.encode_utf16().flat_map(|u| u.to_le_bytes()).chain([0, 0]).collect();
+        let name_bytes: Vec<u8> = name
+            .encode_utf16()
+            .flat_map(|u| u.to_le_bytes())
+            .chain([0, 0])
+            .collect();
         let comment_off = 16 + name_bytes.len() as u32;
         buf.extend_from_slice(&0x1u32.to_le_bytes()); // flags
         buf.extend_from_slice(&name_off.to_le_bytes()); // description → reuse name offset
         buf.extend_from_slice(&name_off.to_le_bytes()); // name
         buf.extend_from_slice(&comment_off.to_le_bytes()); // comment
         buf.extend_from_slice(&name_bytes);
-        let comment_bytes: Vec<u8> =
-            comment.encode_utf16().flat_map(|u| u.to_le_bytes()).chain([0, 0]).collect();
+        let comment_bytes: Vec<u8> = comment
+            .encode_utf16()
+            .flat_map(|u| u.to_le_bytes())
+            .chain([0, 0])
+            .collect();
         buf.extend_from_slice(&comment_bytes);
 
         let printers = decode_printer_info_1(&buf, 1);
