@@ -1,4 +1,4 @@
-//! enum4mac — a native macOS/Rust port of enum4linux.
+//! enum4all — a native, cross-platform Rust port of enum4linux.
 
 mod cli;
 mod netbios;
@@ -405,7 +405,7 @@ async fn run_smb_rpc(args: &Cli, report: &mut Report) {
 }
 
 fn print_banner(args: &Cli) {
-    println!("enum4mac v{} — native SMB/NetBIOS enumeration", env!("CARGO_PKG_VERSION"));
+    println!("enum4all v{} — native SMB/NetBIOS enumeration", env!("CARGO_PKG_VERSION"));
     println!("Target .......... {}", args.target);
     println!(
         "Credentials ..... {}",

@@ -44,7 +44,7 @@ pub async fn server_info(pipe: &mut SmbPipe<'_>) -> Result<OsInfo> {
         .call(OPNUM_NET_SERVER_GET_INFO, &e.into_bytes())
         .await
         .map_err(|e| anyhow!("NetrServerGetInfo failed: {e}"))?;
-    if std::env::var("ENUM4MAC_DEBUG").is_ok() {
+    if std::env::var("ENUM4ALL_DEBUG").is_ok() {
         eprintln!("[debug] NetrServerGetInfo resp ({} bytes): {:02x?}", resp.len(), resp);
     }
     let st = tail_status(&resp)?;

@@ -377,7 +377,7 @@ async fn enum_rid_named(
         // Same input shape as SamrEnumerateDomainsInSamServer: (handle, ctx, prefMax).
         let stub = encode_enum_domains(domain, resume, 0x1000);
         let resp = pipe.call(op, &stub).await.map_err(|e| anyhow!("{label} failed: {e}"))?;
-        if std::env::var("ENUM4MAC_DEBUG").is_ok() {
+        if std::env::var("ENUM4ALL_DEBUG").is_ok() {
             eprintln!("[debug] {label} resp ({} bytes): {:02x?}", resp.len(), resp);
         }
         let (next, list) =

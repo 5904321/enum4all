@@ -233,7 +233,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "enum4mac"
+name = "enum4all"
 version = "0.1.0"
 dependencies = [
  "anyhow",

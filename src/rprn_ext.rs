@@ -45,7 +45,7 @@ pub async fn enum_printers(pipe: &mut SmbPipe<'_>) -> Result<Vec<PrinterInfo>> {
         .call(OPNUM_ENUM_PRINTERS, &encode_enum(PRINTER_ENUM_LOCAL, 1, Some(needed)))
         .await
         .map_err(|e| anyhow!("RpcEnumPrinters(data) failed: {e}"))?;
-    if std::env::var("ENUM4MAC_DEBUG").is_ok() {
+    if std::env::var("ENUM4ALL_DEBUG").is_ok() {
         eprintln!("[debug] EnumPrinters resp ({} bytes): {:02x?}", resp.len(), resp);
     }
     let st = tail_status(&resp)?;

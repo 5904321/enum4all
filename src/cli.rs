@@ -2,12 +2,12 @@
 
 use clap::Parser;
 
-/// enum4mac — a native macOS/Rust port of enum4linux.
+/// enum4all — a native, cross-platform Rust port of enum4linux.
 ///
 /// Enumerates information from SMB/NetBIOS hosts (Windows and Samba) without
 /// requiring the Samba client tools. By default it performs a null session.
 #[derive(Debug, Parser)]
-#[command(name = "enum4mac", version, about, long_about = None)]
+#[command(name = "enum4all", version, about, long_about = None)]
 pub struct Cli {
     /// Target host (IP address or hostname).
     pub target: String,

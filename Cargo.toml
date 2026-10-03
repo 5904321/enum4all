@@ -1,12 +1,12 @@
 [package]
-name = "enum4mac"
+name = "enum4all"
 version = "0.1.0"
 edition = "2024"
-description = "A native, self-contained macOS/Rust port of enum4linux — SMB/NetBIOS enumeration with no Samba tools required"
+description = "A native, self-contained, cross-platform Rust port of enum4linux — SMB/NetBIOS enumeration with no Samba tools required"
 license = "MIT"
 
 [[bin]]
-name = "enum4mac"
+name = "enum4all"
 path = "src/main.rs"
 
 [dependencies]

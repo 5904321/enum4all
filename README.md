@@ -1,12 +1,17 @@
-# enum4mac
+# enum4all
 
-A native, self-contained **macOS/Rust port of [enum4linux](https://github.com/CiscoCXSecurity/enum4linux)**.
+A native, self-contained **Rust port of [enum4linux](https://github.com/CiscoCXSecurity/enum4linux)**.
 
 The original `enum4linux` is a Perl wrapper around the Samba client tools
-(`smbclient`, `rpcclient`, `nmblookup`, `net`). macOS ships none of those, and
-Perl is deprecated on the platform. `enum4mac` reimplements the enumeration
-directly over SMB2/3 and MSRPC in pure Rust, so it runs as a **single binary
-with no external dependencies** — no Samba install required.
+(`smbclient`, `rpcclient`, `nmblookup`, `net`). macOS ships none of those (the
+original motivation for this project), and installing them elsewhere is often
+undesirable. `enum4all` reimplements the enumeration directly over SMB2/3 and
+MSRPC in pure Rust, so it runs as a **single binary with no external
+dependencies** — no Samba install required.
+
+> **Platform support.** Despite the name, this is **cross-platform**: the code
+> is pure Rust with no OS-specific calls, so it builds and runs on macOS, Linux
+> and Windows alike. (Development and live testing so far have been on macOS.)
 
 > **Authorized use only.** This is a security-testing tool. Only run it against
 > hosts you own or have explicit written permission to test.
@@ -15,27 +20,27 @@ with no external dependencies** — no Samba install required.
 
 ```bash
 cargo build --release
-./target/release/enum4mac --help
+./target/release/enum4all --help
 ```
 
 ## Usage
 
 ```bash
 # Default: null session, runs the "simple" set (-U -S -G -P -o -n)
-enum4mac 10.0.0.5
+enum4all 10.0.0.5
 
 # Authenticated
-enum4mac -u alice -p 'P@ssw0rd' -w CORP 10.0.0.5
+enum4all -u alice -p 'P@ssw0rd' -w CORP 10.0.0.5
 
 # Just shares, with access testing
-enum4mac -S -d 10.0.0.5
+enum4all -S -d 10.0.0.5
 
 # Machine-readable output
-enum4mac --json 10.0.0.5
+enum4all --json 10.0.0.5
 ```
 
 Flags mirror the original `enum4linux` where possible (`-U -S -G -P -o -n -r -a`,
-`-u/-p/-w`, `-R`, `-d`). See `enum4mac --help` for the full list.
+`-u/-p/-w`, `-R`, `-d`). See `enum4all --help` for the full list.
 
 ## Feature status
 
